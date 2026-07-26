@@ -53,10 +53,7 @@ class LoxObject {
 // A Lox string. Allocate via {StringPool.intern}, not directly: Lox `==` on strings
 // is the {Ref} case's reference comparison, and {LoxStrings} maps compare keys the
 // same way, so a string built outside the pool would silently compare unequal.
-class LoxString extends LoxObject {
-	def str: string;
-	def hash: int;
-	new(str, hash) { }
+class LoxString(str: string, hash: int) extends LoxObject {
 	def render(buf: StringBuilder) -> StringBuilder {
 		return buf.puts(str);
 	}
@@ -71,19 +68,14 @@ component LoxStrings {
 
 // A boxed local variable. Locals that some inner function captures are stored in a
 // cell, so that the closure and the enclosing frame share one mutable location.
-class LoxCell extends LoxObject {
-	var value: Value;
-	new(value) { }
+class LoxCell(var value: Value) extends LoxObject {
 	def render(buf: StringBuilder) -> StringBuilder {
 		return buf.puts("<cell>");	// never reachable from Lox code
 	}
 }
 
 // A closure: a compiled function plus the cells it captured.
-class LoxClosure extends LoxObject {
-	def func: FuncDecl;
-	def cells: Array<LoxCell>;
-	new(func, cells) { }
+class LoxClosure(func: FuncDecl, cells: Array<LoxCell>) extends LoxObject {
 	def render(buf: StringBuilder) -> StringBuilder {
 		if (func.kind == FuncKind.SCRIPT) return buf.puts("<script>");
 		return buf.put1("<fn %s>", func.name);
@@ -91,22 +83,17 @@ class LoxClosure extends LoxObject {
 }
 
 // A builtin implemented in Virgil, e.g. {clock}.
-class LoxNative extends LoxObject {
-	def name: string;
-	def arity: int;
-	def invoke: Array<Value> -> Value;
-	new(name, arity, invoke) { }
+class LoxNative(name: string, arity: int, invoke: Array<Value> -> Value) extends LoxObject {
 	def render(buf: StringBuilder) -> StringBuilder {
 		return buf.puts("<native fn>");
 	}
 }
 
 // A class is a value.
-class LoxClass extends LoxObject {
-	def name: LoxString;
+class LoxClass(name: LoxString) extends LoxObject {
 	var superclass: LoxClass;
+
 	def methods = LoxStrings.newMap<LoxClosure>();
-	new(name) { }
 	def render(buf: StringBuilder) -> StringBuilder {
 		return buf.puts(name.str);
 	}
