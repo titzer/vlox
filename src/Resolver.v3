@@ -29,7 +29,7 @@ class FuncState(enclosing: FuncState, decl: FuncDecl) {
 }
 
 // Tracks whether `super` is legal in the class body currently being resolved.
-class ClassState(hasSuperclass: bool) { }
+type ClassState(hasSuperclass: bool) #unboxed { }
 
 class Resolver(module: Module, reporter: Reporter) {
 	private var fs: FuncState;
@@ -117,7 +117,7 @@ class Resolver(module: Module, reporter: Reporter) {
 	private def resolveClass(x: ClassStmt) {
 		x.ref = declare(x.name);
 		markInitialized(x.name.text);
-		classes.put(ClassState.new(x.superclass != null));
+		classes.put(ClassState(x.superclass != null));
 		if (x.superclass != null) {
 			resolveExpr(x.superclass);
 			// A hidden binding holding the superclass. Methods that mention
