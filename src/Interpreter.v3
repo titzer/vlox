@@ -380,9 +380,9 @@ class Interpreter(module: Module) {
 				return true;
 			}
 			Wasm.CELL_NEW => { push(Value.Ref(LoxCell.new(pop()))); return true; }
-			Wasm.CELL_GET => { push(LoxCell.!(asObj(pop())).value); return true; }
+			Wasm.CELL_GET => { push(LoxCell.!(asObject(pop())).value); return true; }
 			Wasm.CELL_SET => {
-				var v = pop(), c = LoxCell.!(asObj(pop()));
+				var v = pop(), c = LoxCell.!(asObject(pop()));
 				c.value = v;
 				push(v);
 				return true;
@@ -391,7 +391,7 @@ class Interpreter(module: Module) {
 			Wasm.CLOSURE => {
 				var n = ipop(), funcidx = ipop();
 				var cells = Array<LoxCell>.new(n);
-				for (i < n) cells[i] = LoxCell.!(asObj(stack[vsp - n + i]));
+				for (i < n) cells[i] = LoxCell.!(asObject(stack[vsp - n + i]));
 				vsp -= n;
 				push(Value.Ref(LoxClosure.new(module.funcAt(funcidx), cells)));
 				return true;
@@ -412,7 +412,7 @@ class Interpreter(module: Module) {
 			Wasm.INVOKE_SUPER => {
 				var argc = ipop(), nameIdx = ipop();
 				var sup = pop();
-				return invokeSuper(nameIdx, argc, LoxClass.!(asObj(sup)));
+				return invokeSuper(nameIdx, argc, LoxClass.!(asObject(sup)));
 			}
 			_ => return err("Unknown intrinsic.");
 		}
@@ -499,9 +499,9 @@ class Interpreter(module: Module) {
 	}
 	private def inherit() -> bool {
 		var sup = pop(), sub = pop();
-		var supObj = asObj(sup);
+		var supObj = asObject(sup);
 		if (!LoxClass.?(supObj)) return err("Superclass must be a class.");
-		var s = LoxClass.!(supObj), c = LoxClass.!(asObj(sub));
+		var s = LoxClass.!(supObj), c = LoxClass.!(asObject(sub));
 		c.superclass = s;
 		// Copy methods down so that lookup never walks the chain. An override later
 		// in the class body simply overwrites the inherited entry.
@@ -514,8 +514,8 @@ class Interpreter(module: Module) {
 	}
 	private def defineMethod(nameIdx: int) -> bool {
 		var m = pop(), cls = pop();
-		var c = LoxClass.!(asObj(cls));
-		var closure = LoxClosure.!(asObj(m));
+		var c = LoxClass.!(asObject(cls));
+		var closure = LoxClosure.!(asObject(m));
 		c.methods[module.names[nameIdx]] = closure;
 		push(cls);
 		return true;
@@ -523,7 +523,7 @@ class Interpreter(module: Module) {
 	private def getSuper(nameIdx: int) -> bool {
 		var sup = pop(), receiver = pop();
 		var name = module.names[nameIdx];
-		var m = LoxClass.!(asObj(sup)).findMethod(name);
+		var m = LoxClass.!(asObject(sup)).findMethod(name);
 		if (m == null) return undefinedProperty(name);
 		push(Value.Ref(LoxBoundMethod.new(receiver, m)));
 		return true;
@@ -543,14 +543,14 @@ class Interpreter(module: Module) {
 	private def ipop() -> int {
 		return istack[--isp];
 	}
-	private def asObj(v: Value) -> Obj {
+	private def asObject(v: Value) -> LoxObject {
 		match (v) {
 			Ref(o) => return o;
 			_ => return null;
 		}
 	}
 	private def asInstance(v: Value) -> LoxInstance {
-		var o = asObj(v);
+		var o = asObject(v);
 		return if(LoxInstance.?(o), LoxInstance.!(o));
 	}
 
