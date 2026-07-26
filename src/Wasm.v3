@@ -79,34 +79,6 @@ component Wasm {
 		return "?";
 	}
 
-	// ---- decoding ----------------------------------------------------------------
-	// {CodeBuffer} writes LEBs through {DataWriter}; reading them back takes an
-	// explicit position rather than a cursor object, because the interpreter keeps
-	// its pc in a local across a whole run of instructions.
-
-	// Read an unsigned LEB128 at {pos}; returns the value and the position after it.
-	def readUleb(code: Array<byte>, pos: int) -> (int, int) {
-		var result = 0, shift: byte = 0, pc = pos, b = code[pos];
-		while ((b & 0x80) != 0) {
-			result = result | (int.!(b & 0x7F) << shift);
-			shift += 7;
-			b = code[++pc];
-		}
-		return (result | (int.!(b) << shift), pc + 1);
-	}
-	// Read a signed LEB128 at {pos}; returns the value and the position after it.
-	def readSleb(code: Array<byte>, pos: int) -> (int, int) {
-		var result = 0, shift: byte = 0, pc = pos, b = code[pos];
-		while ((b & 0x80) != 0) {
-			result = result | (int.!(b & 0x7F) << shift);
-			shift += 7;
-			b = code[++pc];
-		}
-		result = result | (int.!(b & 0x7F) << shift);
-		shift += 7;
-		if (shift < 32 && (b & 0x40) != 0) result = result | (-1 << shift);
-		return (result, pc + 1);
-	}
 }
 
 // A growable buffer of Wasm code. {DataWriter} supplies the storage and the LEB128

@@ -55,6 +55,7 @@ class Interpreter(module: Module) {
 	private var frameTop = -1;
 	private var frame: Frame;
 	private var errorMsg: string;
+	private def reader = DataReader.new(Array<byte>.new(0));
 	private def startUs = System.ticksUs();
 
 	private def INIT = module.pool.intern("init");
@@ -93,15 +94,17 @@ class Interpreter(module: Module) {
 
 	// ---- the dispatch loop ---------------------------------------------------------
 
-	// The outer loop re-establishes the cached frame state; the inner loop runs
-	// straight-line bytecode without touching the frame at all, and exits only when
-	// a call or a return switches frames.
+	// The outer loop points the reader at the current frame's code; the inner loop
+	// runs straight-line bytecode without touching the frame at all, and exits only
+	// when a call or a return switches frames. The reader's {pos} is the pc.
 	private def execute() {
+		var d = reader;
 		while (frameTop >= 0) {
-			var f = frame, code = f.code, side = f.side, pc = f.pc;
+			var f = frame, side = f.side;
+			d.reset(f.code, f.pc, f.code.length);
 			while (true) {
-				var opPc = pc;
-				var op = code[pc++];
+				var opPc = d.pos;
+				var op = d.read1();
 				match (op) {
 					Wasm.NOP => ;
 					Wasm.UNREACHABLE => {
@@ -110,27 +113,27 @@ class Interpreter(module: Module) {
 						return;
 					}
 					Wasm.BLOCK => {
-						var bt = code[pc++];
+						var bt = d.read1();
 						pushLabel(side.endPc[opPc], bt, false);
 					}
 					Wasm.LOOP => {
-						var bt = code[pc++];
-						pushLabel(pc, bt, true);
+						var bt = d.read1();
+						pushLabel(d.pos, bt, true);
 					}
 					Wasm.IF => {
-						var bt = code[pc++];
+						var bt = d.read1();
 						if (ipop() != 0) {
 							pushLabel(side.endPc[opPc], bt, false);
 						} else if (side.elsePc[opPc] >= 0) {
 							pushLabel(side.endPc[opPc], bt, false);
-							pc = side.elsePc[opPc];
+							d.at(side.elsePc[opPc]);
 						} else {
-							pc = side.endPc[opPc];
+							d.at(side.endPc[opPc]);
 						}
 					}
 					Wasm.ELSE => {
 						// Falling out of the taken arm: skip the other one.
-						pc = labels[labelTop].target;
+						d.at(labels[labelTop].target);
 						labelTop--;
 					}
 					Wasm.END => {
@@ -142,14 +145,10 @@ class Interpreter(module: Module) {
 						}
 						labelTop--;
 					}
-					Wasm.BR => {
-						var t = Wasm.readUleb(code, pc);
-						pc = branch(t.0);
-					}
+					Wasm.BR => d.at(branch(uleb(d)));
 					Wasm.BR_IF => {
-						var t = Wasm.readUleb(code, pc);
-						pc = t.1;
-						if (ipop() != 0) pc = branch(t.0);
+						var depth = uleb(d);
+						if (ipop() != 0) d.at(branch(depth));
 					}
 					Wasm.RETURN => {
 						f.tracePc = opPc;
@@ -157,50 +156,25 @@ class Interpreter(module: Module) {
 						break;
 					}
 					Wasm.DROP => vsp--;
-					Wasm.LOCAL_GET => {
-						var t = Wasm.readUleb(code, pc);
-						pc = t.1;
-						push(stack[f.base + t.0]);
-					}
-					Wasm.LOCAL_SET => {
-						var t = Wasm.readUleb(code, pc);
-						pc = t.1;
-						stack[f.base + t.0] = stack[--vsp];
-					}
-					Wasm.LOCAL_TEE => {
-						var t = Wasm.readUleb(code, pc);
-						pc = t.1;
-						stack[f.base + t.0] = stack[vsp - 1];
-					}
-					Wasm.GLOBAL_GET => {
-						var t = Wasm.readUleb(code, pc);
-						pc = t.1;
-						push(globals[t.0]);
-					}
-					Wasm.GLOBAL_SET => {
-						var t = Wasm.readUleb(code, pc);
-						pc = t.1;
-						globals[t.0] = stack[--vsp];
-					}
-					Wasm.I32_CONST => {
-						var t = Wasm.readSleb(code, pc);
-						pc = t.1;
-						ipush(t.0);
-					}
+					Wasm.LOCAL_GET => push(stack[f.base + uleb(d)]);
+					Wasm.LOCAL_SET => stack[f.base + uleb(d)] = stack[--vsp];
+					Wasm.LOCAL_TEE => stack[f.base + uleb(d)] = stack[vsp - 1];
+					Wasm.GLOBAL_GET => push(globals[uleb(d)]);
+					Wasm.GLOBAL_SET => globals[uleb(d)] = stack[--vsp];
+					Wasm.I32_CONST => ipush(d.read_sleb32());
 					Wasm.I32_EQZ => istack[isp - 1] = if(istack[isp - 1] == 0, 1, 0);
 					Wasm.CALL => {
-						var t = Wasm.readUleb(code, pc);
+						var idx = uleb(d);
 						// Only intrinsics are reached by a direct call; Lox
 						// calls are dynamic and go through `lox.call`.
-						if (t.0 >= Wasm.NUM_INTRINSICS) {
+						if (idx >= Wasm.NUM_INTRINSICS) {
 							f.tracePc = opPc;
 							failWith("Direct call to a Lox function.");
 							return;
 						}
-						pc = t.1;
-						f.pc = pc;	// resume point in *this* frame
+						f.pc = d.pos;	// resume point in *this* frame
 						f.tracePc = opPc;
-						if (!intrinsic(t.0)) { reportError(); return; }
+						if (!intrinsic(idx)) { reportError(); return; }
 						if (frame != f) break;	// the intrinsic pushed a frame
 					}
 					_ => {
@@ -211,6 +185,10 @@ class Interpreter(module: Module) {
 				}
 			}
 		}
+	}
+	// Every Wasm index immediate is an unsigned LEB128 and fits in an int.
+	private def uleb(d: DataReader) -> int {
+		return int.!(d.read_uleb32());
 	}
 	private def pushLabel(target: int, blockType: byte, isLoop: bool) {
 		if (++labelTop >= labels.length) growLabels();
@@ -360,8 +338,8 @@ class Interpreter(module: Module) {
 			Wasm.SUB => return arith(idx);
 			Wasm.MUL => return arith(idx);
 			Wasm.DIV => return arith(idx);
-			Wasm.EQ => { var b = pop(), a = pop(); push(Values.box(Values.equal(a, b))); return true; }
-			Wasm.NE => { var b = pop(), a = pop(); push(Values.box(!Values.equal(a, b))); return true; }
+			Wasm.EQ => { var b = pop(), a = pop(); push(Values.box(a == b)); return true; }
+			Wasm.NE => { var b = pop(), a = pop(); push(Values.box(a != b)); return true; }
 			Wasm.LT => return compare(idx);
 			Wasm.LE => return compare(idx);
 			Wasm.GT => return compare(idx);
@@ -558,32 +536,32 @@ class Interpreter(module: Module) {
 
 	// Match every structured-control opcode with its `else` and its `end`, the way a
 	// Wasm engine does during validation.
+	//
+	// The arrays get one slot past the end of the code, and the scan starts with the
+	// function body itself already open at that index. The body is a control scope
+	// like any other -- it is what the final `end` closes -- so treating it as one
+	// means {open} is never empty and neither `else` nor `end` needs a guard.
 	private def buildSideTable(code: Array<byte>) -> SideTable {
-		var endPc = Array<int>.new(code.length), elsePc = Array<int>.new(code.length);
-		for (i < code.length) { endPc[i] = -1; elsePc[i] = -1; }
-		var open = Vector<int>.new();
-		var pc = 0;
-		while (pc < code.length) {
-			var start = pc;
-			var op = code[pc++];
-			match (op) {
-				Wasm.BLOCK, Wasm.LOOP, Wasm.IF => { pc++; open.put(start); }
-				Wasm.ELSE => elsePc[open[open.length - 1]] = pc;
+		var n = code.length + 1;
+		var endPc = Array<int>.new(n), elsePc = Array<int>.new(n);
+		for (i < n) { endPc[i] = -1; elsePc[i] = -1; }
+		var open = Vector<int>.new().put(code.length);
+		var d = DataReader.new(code);
+		while (d.more()) {
+			var start = d.pos;
+			match (d.read1()) {
+				Wasm.BLOCK, Wasm.LOOP, Wasm.IF => {
+					d.read1();		// block type
+					open.put(start);
+				}
+				Wasm.ELSE => elsePc[open[open.length - 1]] = d.pos;
 				Wasm.END => {
-					if (open.length > 0) {
-						endPc[open[open.length - 1]] = pc;
-						open.resize(open.length - 1);
-					}
+					endPc[open[open.length - 1]] = d.pos;
+					open.resize(open.length - 1);
 				}
 				Wasm.BR, Wasm.BR_IF, Wasm.CALL, Wasm.LOCAL_GET, Wasm.LOCAL_SET,
-				Wasm.LOCAL_TEE, Wasm.GLOBAL_GET, Wasm.GLOBAL_SET => {
-					while ((code[pc] & 0x80) != 0) pc++;
-					pc++;
-				}
-				Wasm.I32_CONST => {
-					while ((code[pc] & 0x80) != 0) pc++;
-					pc++;
-				}
+				Wasm.LOCAL_TEE, Wasm.GLOBAL_GET, Wasm.GLOBAL_SET => d.read_uleb32();
+				Wasm.I32_CONST => d.read_sleb32();
 				_ => ;
 			}
 		}

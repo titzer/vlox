@@ -1,5 +1,6 @@
 lib/util/Arrays.v3
 lib/util/Chars.v3
+lib/util/DataReader.v3
 lib/util/DataWriter.v3
 lib/util/Floats.v3
 lib/util/Ints.v3

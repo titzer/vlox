@@ -6,6 +6,13 @@
 // allocation per arithmetic result. {Undef} is the sentinel stored in a mutable
 // global that has not been assigned yet; it is never observable by a Lox program
 // because every read of a Lox global is guarded by the {check_global} intrinsic.
+//
+// Virgil's structural equality on this variant *is* Lox's `==`, so the interpreter
+// compares values with a plain `==` and there is no Values.equal. Cases with
+// different tags are unequal; {Num} compares with double.==, which is what Lox
+// wants (NaN != NaN, 0.0 == -0.0); and {Ref} compares by reference, which is also
+// what Lox wants, because strings are interned and so reference equality on them
+// is equality by contents. test/vlox/number/equality.lox pins all of that down.
 type Value #unboxed {
 	case Undef;
 	case Nil;
@@ -29,20 +36,6 @@ component Values {
 			Nil => return false;
 			Bool(b) => return b;
 			_ => return true;
-		}
-	}
-	// Lox equality. Virgil's structural equality on the variant already gives the
-	// right answer for every case but {Num}: it compares the payload doubles
-	// bitwise, whereas Lox numbers follow IEEE, where NaN != NaN and 0.0 == -0.0.
-	// Strings need no special case because they are interned, so the reference
-	// comparison {Ref} gets is a comparison by contents.
-	def equal(a: Value, b: Value) -> bool {
-		match (a) {
-			Num(x) => match (b) {
-				Num(y) => return x == y;
-				_ => return false;
-			}
-			_ => return a == b;
 		}
 	}
 	// Render {v} the way Lox's {print} does.

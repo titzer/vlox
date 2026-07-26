@@ -1,0 +1,67 @@
+// Lox `==` is Virgil's structural equality on the Value variant, used directly with
+// no helper. This pins down every property that relies on: if any of it stops
+// holding, `Values.box(a == b)` in the interpreter is no longer Lox equality.
+
+// Numbers compare with double.==, not bitwise. Both of these lines fail under a
+// bitwise comparison of the variant payload, in opposite directions.
+var nan = 0 / 0;
+var alsoNan = (1 - 1) / (1 - 1);
+print nan == nan;         // expect: false
+print nan == alsoNan;     // expect: false
+print nan != nan;         // expect: true
+print 0 == -0;            // expect: true
+print -0 == 0;            // expect: true
+print 0 != -0;            // expect: false
+
+// Ordinary numbers, including across integral and fractional spellings.
+print 1 == 1;             // expect: true
+print 1 == 1.0;           // expect: true
+print 1 == 2;             // expect: false
+print 0.1 + 0.2 == 0.3;   // expect: false
+
+// Different cases of the variant are never equal, in either direction.
+print nil == false;       // expect: false
+print false == nil;       // expect: false
+print nil == 0;           // expect: false
+print 0 == nil;           // expect: false
+print true == 1;          // expect: false
+print 1 == true;          // expect: false
+print "1" == 1;           // expect: false
+print 1 == "1";           // expect: false
+print nil == "";          // expect: false
+print true == "true";     // expect: false
+
+// Same case, same payload.
+print nil == nil;         // expect: true
+print true == true;       // expect: true
+print false == false;     // expect: true
+print true == false;      // expect: false
+
+// Strings are interned, so the reference comparison the Ref case performs is a
+// comparison by contents no matter how the string was built.
+var built = "";
+for (var i = 0; i < 3; i = i + 1) built = built + "ab";
+print built == "ababab";  // expect: true
+print built != "ababab";  // expect: false
+print "a" == "b";         // expect: false
+print "" == "";           // expect: true
+
+// Every other object compares by identity, not by structure.
+class Box { init(v) { this.v = v; } }
+var b1 = Box(1);
+var b2 = Box(1);
+print b1 == b1;           // expect: true
+print b1 == b2;           // expect: false
+print Box == Box;         // expect: true
+
+fun f() {}
+fun g() {}
+print f == f;             // expect: true
+print f == g;             // expect: false
+print clock == clock;     // expect: true
+
+// A bound method is a fresh object each time it is read off an instance, so two
+// reads are not equal even though they name the same method.
+class M { m() {} }
+var inst = M();
+print inst.m == inst.m;   // expect: false

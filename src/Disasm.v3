@@ -55,10 +55,8 @@ class Disassembler(module: Module) {
 		}
 		buf.ln();
 		indent = 1;
-		var pc = 0;
-		while (pc < f.code.length) {
-			pc = renderInstr(buf, f, pc);
-		}
+		var d = DataReader.new(f.code);
+		while (d.more()) renderInstr(buf, f, d);
 		return buf.puts(")").ln();
 	}
 	private def putValTypes(buf: StringBuilder, head: string, n: int) {
@@ -67,10 +65,10 @@ class Disassembler(module: Module) {
 		for (i < n) buf.puts(" lox");
 		buf.putc(')');
 	}
-	// Render one instruction and return the pc of the next one.
-	private def renderInstr(buf: StringBuilder, f: FuncDecl, pc: int) -> int {
-		var code = f.code;
-		var op = code[pc];
+	// Render the instruction at the reader's position, leaving it on the next one.
+	private def renderInstr(buf: StringBuilder, f: FuncDecl, d: DataReader) {
+		var pc = d.pos;
+		var op = d.read1();
 		if (op == Wasm.END || op == Wasm.ELSE) indent--;
 		// {pad} works on the whole buffer, so column targets are relative to the
 		// start of this line.
@@ -79,64 +77,47 @@ class Disassembler(module: Module) {
 		buf.put2("%d:%d", t.0, t.1).pad(' ', col + 9);
 		buf.putc('|').putd(pc).pad(' ', col + 15);
 		for (i < indent) buf.puts("  ");
-		var next = pc + 1;
 		match (op) {
 			Wasm.UNREACHABLE => buf.puts("unreachable");
 			Wasm.NOP => buf.puts("nop");
-			Wasm.BLOCK => { putBlock(buf, "block", code[next++]); indent++; }
-			Wasm.LOOP => { putBlock(buf, "loop", code[next++]); indent++; }
-			Wasm.IF => { putBlock(buf, "if", code[next++]); indent++; }
+			Wasm.BLOCK => { putBlock(buf, "block", d.read1()); indent++; }
+			Wasm.LOOP => { putBlock(buf, "loop", d.read1()); indent++; }
+			Wasm.IF => { putBlock(buf, "if", d.read1()); indent++; }
 			Wasm.ELSE => { buf.puts("else"); indent++; }
 			Wasm.END => buf.puts("end");
-			Wasm.BR => next = imm(buf, code, next, "br");
-			Wasm.BR_IF => next = imm(buf, code, next, "br_if");
+			Wasm.BR => imm(buf, d, "br");
+			Wasm.BR_IF => imm(buf, d, "br_if");
 			Wasm.RETURN => buf.puts("return");
 			Wasm.DROP => buf.puts("drop");
-			Wasm.LOCAL_GET => next = imm(buf, code, next, "local.get");
-			Wasm.LOCAL_SET => next = imm(buf, code, next, "local.set");
-			Wasm.LOCAL_TEE => next = imm(buf, code, next, "local.tee");
+			Wasm.LOCAL_GET => imm(buf, d, "local.get");
+			Wasm.LOCAL_SET => imm(buf, d, "local.set");
+			Wasm.LOCAL_TEE => imm(buf, d, "local.tee");
 			Wasm.I32_EQZ => buf.puts("i32.eqz");
-			Wasm.GLOBAL_GET => {
-				var g = Wasm.readUleb(code, next);
-				buf.put1("global.get %d", g.0);
-				annotateGlobal(buf, g.0);
-				next = g.1;
-			}
-			Wasm.GLOBAL_SET => {
-				var g = Wasm.readUleb(code, next);
-				buf.put1("global.set %d", g.0);
-				annotateGlobal(buf, g.0);
-				next = g.1;
-			}
-			Wasm.I32_CONST => {
-				var v = Wasm.readSleb(code, next);
-				buf.put1("i32.const %d", v.0);
-				next = v.1;
-			}
+			Wasm.GLOBAL_GET => annotateGlobal(buf, imm(buf, d, "global.get"));
+			Wasm.GLOBAL_SET => annotateGlobal(buf, imm(buf, d, "global.set"));
+			Wasm.I32_CONST => buf.put1("i32.const %d", d.read_sleb32());
 			Wasm.CALL => {
-				var v = Wasm.readUleb(code, next);
-				buf.put1("call %d", v.0);
-				if (v.0 < Wasm.NUM_INTRINSICS) {
-					buf.put1("  ;; %s", Wasm.intrinsicName(v.0));
+				var idx = imm(buf, d, "call");
+				if (idx < Wasm.NUM_INTRINSICS) {
+					buf.put1("  ;; %s", Wasm.intrinsicName(idx));
 				} else {
-					buf.put1("  ;; $%s", module.funcAt(v.0).name);
+					buf.put1("  ;; $%s", module.funcAt(idx).name);
 				}
-				next = v.1;
 			}
 			_ => buf.put1("<unknown 0x%x>", op);
 		}
 		buf.ln();
-		return next;
 	}
 	private def putBlock(buf: StringBuilder, name: string, bt: byte) {
 		buf.puts(name);
 		var t = blockType(bt);
 		if (t.length > 0) buf.sp().puts(t);
 	}
-	private def imm(buf: StringBuilder, code: Array<byte>, pos: int, name: string) -> int {
-		var v = Wasm.readUleb(code, pos);
-		buf.put2("%s %d", name, v.0);
-		return v.1;
+	// Render "<name> <index>" and return the index.
+	private def imm(buf: StringBuilder, d: DataReader, name: string) -> int {
+		var v = int.!(d.read_uleb32());
+		buf.put2("%s %d", name, v);
+		return v;
 	}
 	private def annotateGlobal(buf: StringBuilder, idx: int) {
 		buf.puts("  ;; ");
