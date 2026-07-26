@@ -1,0 +1,14 @@
+// Recursion multiplies the label stack by the static nesting depth of each frame,
+// so the VM's control stack has to grow rather than being fixed at some multiple
+// of the frame limit.
+fun r(n) {
+  if (n == 0) return 0;
+  var t = 0;
+  for (var a = 0; a < 1; a = a + 1)
+    for (var b = 0; b < 1; b = b + 1)
+      for (var c = 0; c < 1; c = c + 1)
+        for (var d = 0; d < 1; d = d + 1)
+          t = r(n - 1) + 1;
+  return t;
+}
+print r(500); // expect: 500

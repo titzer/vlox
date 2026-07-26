@@ -1,0 +1,121 @@
+// Copyright 2026 Ben L. Titzer. All rights reserved.
+// See LICENSE for details of Apache 2.0 license.
+
+// One entry of the module's global index space. Constants are immutable globals
+// holding a literal; variables are mutable globals holding a Lox global, and start
+// out {Value.Undef} so that reads before definition can be diagnosed by name.
+type GlobalEntry {
+	case Const(value: Value);
+	case Var(varName: string);
+}
+
+// A compiled Vlox module: a global index space, a function index space, and a pool
+// of property/method names referenced by the high-level object opcodes.
+//
+// The layout mirrors a real Wasm module. Function indices below
+// {Wasm.NUM_INTRINSICS} name runtime intrinsics, exactly as the imported functions
+// of a real module occupy the low end of the index space; user functions follow.
+class Module {
+	def pool = StringPool.new();
+	def globals = Vector<GlobalEntry>.new();
+	def funcs = Vector<FuncDecl>.new();
+	def names = Vector<LoxString>.new();
+
+	private def globalMap = Strings.newMap<int>();
+	private def stringMap = Strings.newMap<int>();
+	private def numMap = HashMap<long, int>.new(hashLong, longEqual);
+	private def nameMap = Strings.newMap<int>();
+	private var nilConst = -1;
+	private var trueConst = -1;
+	private var falseConst = -1;
+
+	new() {
+		// Reserve a global for every builtin, so that the index space is final
+		// before the VM allocates storage for it.
+		for (n in Natives.NAMES) globalFor(n);
+	}
+
+	// The global index of the Lox global variable {name}, allocating on first use.
+	// Referencing an undefined global is a *runtime* error in Lox, so a slot exists
+	// for every mentioned name whether or not it is ever assigned.
+	def globalFor(name: string) -> int {
+		if (globalMap.has(name)) return globalMap[name];
+		var idx = globals.length;
+		globals.put(GlobalEntry.Var(name));
+		globalMap[name] = idx;
+		return idx;
+	}
+	// The global index of a constant. Constants are deduplicated; numbers by exact
+	// bit pattern, so that 0.0 and -0.0 do not collapse into one slot.
+	def constant(v: Value) -> int {
+		match (v) {
+			Nil => {
+				if (nilConst < 0) nilConst = addConst(v);
+				return nilConst;
+			}
+			Bool(b) => {
+				if (b) {
+					if (trueConst < 0) trueConst = addConst(v);
+					return trueConst;
+				}
+				if (falseConst < 0) falseConst = addConst(v);
+				return falseConst;
+			}
+			Num(d) => {
+				var key = long.view(d);
+				if (numMap.has(key)) return numMap[key];
+				var idx = addConst(v);
+				numMap[key] = idx;
+				return idx;
+			}
+			_ => return addConst(v);
+		}
+	}
+	def stringConstant(s: string) -> int {
+		if (stringMap.has(s)) return stringMap[s];
+		var idx = addConst(Value.Ref(pool.intern(s)));
+		stringMap[s] = idx;
+		return idx;
+	}
+	// The index of {s} in the name pool used by the field, method and class opcodes.
+	def nameFor(s: string) -> int {
+		if (nameMap.has(s)) return nameMap[s];
+		var idx = names.length;
+		names.put(pool.intern(s));
+		nameMap[s] = idx;
+		return idx;
+	}
+	// Register a function, assigning its Wasm function index.
+	def addFunc(f: FuncDecl) -> FuncDecl {
+		f.index = Wasm.NUM_INTRINSICS + funcs.length;
+		funcs.put(f);
+		return f;
+	}
+	def funcAt(index: int) -> FuncDecl {
+		return funcs[index - Wasm.NUM_INTRINSICS];
+	}
+	private def addConst(v: Value) -> int {
+		var idx = globals.length;
+		globals.put(GlobalEntry.Const(v));
+		return idx;
+	}
+}
+
+// Note: the mask needs an explicit {u64} type; `0xFFFF_FFFFu64` would be the {int}
+// value -1 widened, i.e. all 64 bits set.
+def MASK32: u64 = 0xFFFF_FFFF;
+
+// The builtins Lox defines. Each occupies a module global, whether or not the
+// program mentions it.
+component Natives {
+	def CLOCK = "clock";
+	def NAMES = [CLOCK];
+}
+
+def hashLong(v: long) -> int {
+	var u = u64.view(v);
+	return int.view(u32.!((u ^ (u >> 32)) & MASK32));
+}
+def longEqual(a: long, b: long) -> bool {
+	return a == b;
+}

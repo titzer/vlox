@@ -1,0 +1,120 @@
+// Copyright 2026 Ben L. Titzer. All rights reserved.
+// See LICENSE for details of Apache 2.0 license.
+
+// AST for Lox. Nodes are classes rather than variants because the resolver
+// annotates them in place with the storage decisions the compiler needs.
+
+// How a name is reached at run time. Filled in by the Resolver.
+enum VarKind { GLOBAL, LOCAL, UPVALUE }
+
+// The resolved storage for one variable *use*. All uses of a given local inside
+// the function that declares it share one {VarRef} object, so that discovering a
+// capture later retroactively boxes every earlier use.
+class VarRef(name: string) {
+	var kind = VarKind.GLOBAL;
+	var index: int;		// global index, local slot, or upvalue index
+	var boxed: bool;	// storage is a LoxCell rather than the value itself
+}
+
+// One captured variable of a closure, named relative to the *enclosing* function.
+type Capture {
+	case FromLocal(slot: int);
+	case FromUpvalue(index: int);
+}
+
+enum FuncKind { SCRIPT, FUNCTION, METHOD, INITIALIZER }
+
+// Nodes carry their source range in a mutable field rather than a constructor
+// parameter, so that a node built bottom-up can still be stamped with the range it
+// actually covers: `IfStmt.new(c, t, e).at(spanFrom(start))`.
+class Node {
+	var span: Span;
+	def at(span: Span) -> this {
+		this.span = span;
+	}
+	def line() -> int { return span.beginLine; }
+}
+
+// A function, method, or the implicit top-level script.
+class FuncDecl(name: string, kind: FuncKind, params: Array<Token>, body: Array<Stmt>) extends Node {
+	var index: int;			// Wasm function index
+	var numLocals: int;		// slot 0 (callee) + params + body locals + scratch
+	var paramRefs: Array<VarRef>;	// storage of each parameter
+	var selfRef: VarRef;		// storage of slot 0, when it is captured
+	def captures = Vector<Capture>.new();
+	var code: Array<byte>;		// emitted by the Compiler
+	var positions: Array<int>;	// (offset, line, column) triples, sorted by offset
+
+	def arity() -> int { return params.length; }
+	// Source position of the bytecode at {pc}: the line for stack traces, the
+	// column for disassembly listings.
+	def posAt(pc: int) -> (int, int) {
+		var line = span.beginLine, column = span.beginColumn;
+		for (i = 0; i < positions.length; i += 3) {
+			if (positions[i] > pc) break;
+			line = positions[i + 1];
+			column = positions[i + 2];
+		}
+		return (line, column);
+	}
+	def lineAt(pc: int) -> int {
+		return posAt(pc).0;
+	}
+}
+
+class Expr extends Node {
+	// A parenthesized expression is never an assignment target: `(a) = 1` is an
+	// error even though `a = 1` is fine.
+	var grouped: bool;
+	def group() -> this {
+		grouped = true;
+	}
+}
+
+class LiteralExpr(value: Value) extends Expr { }
+// A string literal, kept distinct from {LiteralExpr} because the constant pool
+// needs the interned {LoxString}, which only exists once the runtime is up.
+class StringExpr(token: Token) extends Expr { }
+class VarExpr(name: Token) extends Expr {
+	var ref: VarRef;
+}
+class AssignExpr(name: Token, value: Expr) extends Expr {
+	var ref: VarRef;
+}
+class UnaryExpr(op: Token, operand: Expr) extends Expr { }
+class BinaryExpr(op: Token, left: Expr, right: Expr) extends Expr { }
+// {and} / {or}: short-circuiting, and yields one of its operands, not a bool.
+class LogicalExpr(op: Token, left: Expr, right: Expr) extends Expr { }
+class CallExpr(callee: Expr, args: Array<Expr>) extends Expr { }
+class GetExpr(obj: Expr, name: Token) extends Expr { }
+class SetExpr(obj: Expr, name: Token, value: Expr) extends Expr { }
+class ThisExpr(keyword: Token) extends Expr {
+	var ref: VarRef;
+}
+class SuperExpr(keyword: Token, method: Token) extends Expr {
+	var superRef: VarRef;	// the hidden "super" binding of the enclosing class
+	var thisRef: VarRef;	// the receiver
+}
+
+class Stmt extends Node { }
+
+class ExprStmt(expr: Expr) extends Stmt { }
+class PrintStmt(expr: Expr) extends Stmt { }
+class BlockStmt(stmts: Array<Stmt>) extends Stmt { }
+class IfStmt(cond: Expr, thenArm: Stmt, elseArm: Stmt) extends Stmt { }
+class WhileStmt(cond: Expr, body: Stmt) extends Stmt { }
+// Kept as its own node rather than desugared, so that the compiler can emit the
+// canonical Wasm block/loop nest with the increment inside the loop. {init} is
+// null, a VarStmt or an ExprStmt; a null {cond} means "true"; {incr} may be null.
+class ForStmt(init: Stmt, cond: Expr, incr: Expr, body: Stmt) extends Stmt { }
+class VarStmt(name: Token, init: Expr) extends Stmt {	// {init} is null for "var x;"
+	var ref: VarRef;
+}
+class ReturnStmt(keyword: Token, value: Expr) extends Stmt { }	// {value} null for "return;"
+class FunStmt(name: Token, func: FuncDecl) extends Stmt {
+	var ref: VarRef;
+}
+class ClassStmt(name: Token, superclass: VarExpr, methods: Array<FuncDecl>) extends Stmt {
+	var ref: VarRef;	// storage of the class name; {superclass} null if none
+	var superRef: VarRef;	// storage of the hidden "super" binding
+}

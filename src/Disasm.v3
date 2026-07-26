@@ -1,0 +1,184 @@
+// Copyright 2026 Ben L. Titzer. All rights reserved.
+// See LICENSE for details of Apache 2.0 license.
+
+// Renders a compiled module as a Wasm-style text listing. Because the bytecode is
+// real Wasm, this is a real (if minimal) Wasm disassembler; the only Vlox-specific
+// part is annotating calls below {Wasm.NUM_INTRINSICS} with the intrinsic name.
+class Disassembler(module: Module) {
+	private var indent: int;
+
+	def renderModule(buf: StringBuilder) -> StringBuilder {
+		buf.puts(";; ---- globals ----").ln();
+		for (i < module.globals.length) {
+			buf.puts("  ");
+			renderGlobalDecl(buf, i);
+			buf.ln();
+		}
+		if (module.names.length > 0) {
+			buf.puts(";; ---- names ----").ln();
+			for (i < module.names.length) {
+				buf.put2("  [%d] %s", i, module.names[i].str).ln();
+			}
+		}
+		for (i < module.funcs.length) {
+			buf.ln();
+			renderFunc(buf, module.funcs[i]);
+		}
+		return buf;
+	}
+	private def renderGlobalDecl(buf: StringBuilder, i: int) {
+		buf.put1("(global %d ", i);
+		match (module.globals[i]) {
+			Const(value) => {
+				buf.puts("lox (");
+				renderValue(buf, value);
+				buf.puts("))");
+			}
+			Var(varName) => buf.put1("(mut lox) $%s)", varName);
+		}
+	}
+	def renderFunc(buf: StringBuilder, f: FuncDecl) -> StringBuilder {
+		// Slot 0 is the callee, so the Wasm arity is one more than the Lox arity.
+		buf.put2("(func %d $%s", f.index, f.name);
+		putValTypes(buf, " (param", f.arity() + 1);
+		putValTypes(buf, " (local", f.numLocals - f.arity() - 1);
+		buf.puts("  ;; ");
+		f.span.render(buf);
+		if (f.captures.length > 0) {
+			buf.puts(" captures");
+			for (i < f.captures.length) {
+				match (f.captures[i]) {
+					FromLocal(slot) => buf.put1(" local%d", slot);
+					FromUpvalue(index) => buf.put1(" up%d", index);
+				}
+			}
+		}
+		buf.ln();
+		indent = 1;
+		var pc = 0;
+		while (pc < f.code.length) {
+			pc = renderInstr(buf, f, pc);
+		}
+		return buf.puts(")").ln();
+	}
+	private def putValTypes(buf: StringBuilder, head: string, n: int) {
+		if (n <= 0) return;
+		buf.puts(head);
+		for (i < n) buf.puts(" lox");
+		buf.putc(')');
+	}
+	// Render one instruction and return the pc of the next one.
+	private def renderInstr(buf: StringBuilder, f: FuncDecl, pc: int) -> int {
+		var code = f.code;
+		var op = code[pc];
+		if (op == Wasm.END || op == Wasm.ELSE) indent--;
+		// {pad} works on the whole buffer, so column targets are relative to the
+		// start of this line.
+		var col = buf.length;
+		var t = f.posAt(pc);
+		buf.put2("%d:%d", t.0, t.1).pad(' ', col + 9);
+		buf.putc('|').putd(pc).pad(' ', col + 15);
+		for (i < indent) buf.puts("  ");
+		var next = pc + 1;
+		match (op) {
+			Wasm.UNREACHABLE => buf.puts("unreachable");
+			Wasm.NOP => buf.puts("nop");
+			Wasm.BLOCK => { putBlock(buf, "block", code[next++]); indent++; }
+			Wasm.LOOP => { putBlock(buf, "loop", code[next++]); indent++; }
+			Wasm.IF => { putBlock(buf, "if", code[next++]); indent++; }
+			Wasm.ELSE => { buf.puts("else"); indent++; }
+			Wasm.END => buf.puts("end");
+			Wasm.BR => next = imm(buf, code, next, "br");
+			Wasm.BR_IF => next = imm(buf, code, next, "br_if");
+			Wasm.RETURN => buf.puts("return");
+			Wasm.DROP => buf.puts("drop");
+			Wasm.LOCAL_GET => next = imm(buf, code, next, "local.get");
+			Wasm.LOCAL_SET => next = imm(buf, code, next, "local.set");
+			Wasm.LOCAL_TEE => next = imm(buf, code, next, "local.tee");
+			Wasm.I32_EQZ => buf.puts("i32.eqz");
+			Wasm.GLOBAL_GET => {
+				var g = uleb(code, next);
+				buf.put1("global.get %d", g.0);
+				annotateGlobal(buf, g.0);
+				next = g.1;
+			}
+			Wasm.GLOBAL_SET => {
+				var g = uleb(code, next);
+				buf.put1("global.set %d", g.0);
+				annotateGlobal(buf, g.0);
+				next = g.1;
+			}
+			Wasm.I32_CONST => {
+				var v = sleb(code, next);
+				buf.put1("i32.const %d", v.0);
+				next = v.1;
+			}
+			Wasm.CALL => {
+				var v = uleb(code, next);
+				buf.put1("call %d", v.0);
+				if (v.0 < Wasm.NUM_INTRINSICS) {
+					buf.put1("  ;; %s", Wasm.intrinsicName(v.0));
+				} else {
+					buf.put1("  ;; $%s", module.funcAt(v.0).name);
+				}
+				next = v.1;
+			}
+			_ => buf.put1("<unknown 0x%x>", op);
+		}
+		buf.ln();
+		return next;
+	}
+	private def putBlock(buf: StringBuilder, name: string, bt: byte) {
+		buf.puts(name);
+		var t = blockType(bt);
+		if (t.length > 0) buf.sp().puts(t);
+	}
+	private def imm(buf: StringBuilder, code: Array<byte>, pos: int, name: string) -> int {
+		var v = uleb(code, pos);
+		buf.put2("%s %d", name, v.0);
+		return v.1;
+	}
+	private def annotateGlobal(buf: StringBuilder, idx: int) {
+		buf.puts("  ;; ");
+		match (module.globals[idx]) {
+			Const(value) => renderValue(buf, value);
+			Var(varName) => buf.put1("$%s", varName);
+		}
+	}
+	private def renderValue(buf: StringBuilder, v: Value) {
+		if (Values.isString(v)) {
+			buf.putc('\"');
+			Values.render(buf, v);
+			buf.putc('\"');
+		} else {
+			Values.render(buf, v);
+		}
+	}
+	private def blockType(b: byte) -> string {
+		if (b == Wasm.BT_VOID) return "";
+		if (b == Wasm.VT_LOX) return "(result lox)";
+		if (b == Wasm.VT_I32) return "(result i32)";
+		return "?";
+	}
+	private def uleb(code: Array<byte>, pos: int) -> (int, int) {
+		var result = 0, shift: byte = 0, pc = pos, b = code[pos];
+		while ((b & 0x80) != 0) {
+			result = result | (int.!(b & 0x7F) << shift);
+			shift += 7;
+			b = code[++pc];
+		}
+		return (result | (int.!(b) << shift), pc + 1);
+	}
+	private def sleb(code: Array<byte>, pos: int) -> (int, int) {
+		var result = 0, shift: byte = 0, pc = pos, b = code[pos];
+		while ((b & 0x80) != 0) {
+			result = result | (int.!(b & 0x7F) << shift);
+			shift += 7;
+			b = code[++pc];
+		}
+		result = result | (int.!(b & 0x7F) << shift);
+		shift += 7;
+		if (shift < 32 && (b & 0x40) != 0) result = result | (-1 << shift);
+		return (result, pc + 1);
+	}
+}

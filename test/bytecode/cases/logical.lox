@@ -1,0 +1,3 @@
+// and/or become a Wasm `if` with a lox result, using a scratch local.
+var a = 1 and 2;
+var b = nil or "x";

@@ -1,0 +1,6 @@
+print "a" + "b" + "c";        // expect: abc
+var s = "";
+for (var i = 0; i < 4; i = i + 1) s = s + "x";
+print s;                       // expect: xxxx
+print "" + "";                 // expect:
+print "tab\there";             // expect: tab\there

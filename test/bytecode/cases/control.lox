@@ -1,0 +1,6 @@
+// while -> block/loop/br_if/br ; if -> if/else/end
+var i = 0;
+while (i < 3) {
+  if (i == 1) print "one"; else print "other";
+  i = i + 1;
+}

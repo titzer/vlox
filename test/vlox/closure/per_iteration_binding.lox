@@ -1,0 +1,18 @@
+// A `var` inside a loop body is a fresh binding each time the declaration runs,
+// so each closure gets its own cell. The `for` loop variable itself is declared
+// once, so all closures share it.
+var closures = "";
+var f1; var f2; var f3;
+for (var i = 1; i < 4; i = i + 1) {
+  var j = i;
+  fun show() { print i; print j; }
+  if (i == 1) f1 = show;
+  else if (i == 2) f2 = show;
+  else f3 = show;
+}
+f1(); // expect: 4
+      // expect: 1
+f2(); // expect: 4
+      // expect: 2
+f3(); // expect: 4
+      // expect: 3

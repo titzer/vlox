@@ -1,0 +1,25 @@
+// Every clause of a `for` is optional. Lox has no `break`, so an unconditional
+// loop has to be escaped with `return`.
+var i = 0;
+for (; i < 3;) i = i + 1;
+print i;                        // expect: 3
+
+var n = 0;
+for (var j = 0; j < 3; j = j + 1) n = n + j;
+print n;                        // expect: 3
+
+fun countUp() {
+  for (var k = 0; ; k = k + 1) {
+    if (k == 4) return k;
+  }
+}
+print countUp();                // expect: 4
+
+fun body() {
+  var c = 0;
+  for (;;) {
+    c = c + 1;
+    if (c > 2) return c;
+  }
+}
+print body();                   // expect: 3

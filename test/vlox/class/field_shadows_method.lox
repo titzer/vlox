@@ -1,0 +1,10 @@
+// A field shadows a method of the same name, even for the fused invoke form.
+class Foo {
+  bar() { return "method"; }
+}
+var f = Foo();
+print f.bar();          // expect: method
+fun replacement() { return "field"; }
+f.bar = replacement;
+print f.bar();          // expect: field
+print f.bar;            // expect: <fn replacement>

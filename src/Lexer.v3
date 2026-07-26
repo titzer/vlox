@@ -1,0 +1,198 @@
+// Copyright 2026 Ben L. Titzer. All rights reserved.
+// See LICENSE for details of Apache 2.0 license.
+
+// Token kinds for Lox. The order matters only for readability.
+enum Tok {
+	// single character
+	LPAREN, RPAREN, LBRACE, RBRACE,
+	COMMA, DOT, MINUS, PLUS, SEMICOLON, SLASH, STAR,
+	// one or two characters
+	BANG, BANG_EQUAL, EQUAL, EQUAL_EQUAL,
+	GREATER, GREATER_EQUAL, LESS, LESS_EQUAL,
+	// literals
+	IDENT, STRING, NUMBER,
+	// keywords
+	AND, CLASS, ELSE, FALSE, FOR, FUN, IF, NIL, OR,
+	PRINT, RETURN, SUPER, THIS, TRUE, VAR, WHILE,
+	// synthetic
+	ERROR, EOF
+}
+
+// A half-open source range, in the style of Virgil's own VST: the text spans from
+// (beginLine, beginColumn) up to but not including (endLine, endColumn). Lines and
+// columns are 1-based.
+type Span(beginLine: int, beginColumn: int, endLine: int, endColumn: int) {
+	// The range covering this one through the end of {that}.
+	def plus(that: Span) -> Span {
+		if (that.endLine == 0) return this;
+		return Span(beginLine, beginColumn, that.endLine, that.endColumn);
+	}
+	// "3:11" for a single-character range, "3:11-3:14" otherwise.
+	def render(buf: StringBuilder) -> StringBuilder {
+		buf.put2("%d:%d", beginLine, beginColumn);
+		if (endLine != beginLine || endColumn != beginColumn + 1) {
+			buf.put2("-%d:%d", endLine, endColumn);
+		}
+		return buf;
+	}
+}
+
+// A token carries its kind, its exact source text (the error messages quote the
+// offending lexeme verbatim), and its source range.
+class Token(kind: Tok, text: string, span: Span) {
+	var num: double;	// value of a NUMBER token
+	var str: string;	// unescaped contents of a STRING token
+
+	def line() -> int { return span.beginLine; }
+}
+
+// The Lox scanner. Produces the full token list up front; the parser is a plain
+// index walk over it. Scanner errors become ERROR tokens whose {text} is the
+// message, so that error ordering is exactly source order.
+class Lexer(src: string) {
+	private var pos: int;
+	private var start: int;
+	private var line = 1;
+	private var lineStart: int;	// offset of the first character of {line}
+	private var startLine: int;
+	private var startCol: int;
+
+	def tokenize() -> Vector<Token> {
+		var v = Vector<Token>.new();
+		while (true) {
+			var t = next();
+			v.put(t);
+			if (t.kind == Tok.EOF) break;
+		}
+		return v;
+	}
+	private def next() -> Token {
+		skipWhitespace();
+		start = pos;
+		startLine = line;
+		startCol = pos - lineStart + 1;
+		if (pos >= src.length) return Token.new(Tok.EOF, "", span());
+		var c = src[pos++];
+		if (isAlpha(c)) return ident();
+		if (isDigit(c)) return number();
+		match (c) {
+			'(' => return make(Tok.LPAREN);
+			')' => return make(Tok.RPAREN);
+			'{' => return make(Tok.LBRACE);
+			'}' => return make(Tok.RBRACE);
+			';' => return make(Tok.SEMICOLON);
+			',' => return make(Tok.COMMA);
+			'.' => return make(Tok.DOT);
+			'-' => return make(Tok.MINUS);
+			'+' => return make(Tok.PLUS);
+			'/' => return make(Tok.SLASH);
+			'*' => return make(Tok.STAR);
+			'!' => return make(if(matchc('='), Tok.BANG_EQUAL, Tok.BANG));
+			'=' => return make(if(matchc('='), Tok.EQUAL_EQUAL, Tok.EQUAL));
+			'<' => return make(if(matchc('='), Tok.LESS_EQUAL, Tok.LESS));
+			'>' => return make(if(matchc('='), Tok.GREATER_EQUAL, Tok.GREATER));
+			'\"' => return str();
+			_ => return error("Unexpected character.");
+		}
+	}
+	private def skipWhitespace() {
+		while (pos < src.length) {
+			var c = src[pos];
+			match (c) {
+				' ', '\r', '\t' => pos++;
+				'\n' => { pos++; newline(); }
+				'/' => {
+					if (pos + 1 < src.length && src[pos + 1] == '/') {
+						while (pos < src.length && src[pos] != '\n') pos++;
+					} else {
+						return;
+					}
+				}
+				_ => return;
+			}
+		}
+	}
+	private def newline() {
+		line++;
+		lineStart = pos;
+	}
+	private def ident() -> Token {
+		while (pos < src.length && isAlphaNum(src[pos])) pos++;
+		var text = Arrays.range(src, start, pos);
+		return Token.new(keyword(text), text, span());
+	}
+	private def keyword(text: string) -> Tok {
+		match (text[0]) {
+			'a' => if (Strings.equal(text, "and")) return Tok.AND;
+			'c' => if (Strings.equal(text, "class")) return Tok.CLASS;
+			'e' => if (Strings.equal(text, "else")) return Tok.ELSE;
+			'f' => {
+				if (Strings.equal(text, "false")) return Tok.FALSE;
+				if (Strings.equal(text, "for")) return Tok.FOR;
+				if (Strings.equal(text, "fun")) return Tok.FUN;
+			}
+			'i' => if (Strings.equal(text, "if")) return Tok.IF;
+			'n' => if (Strings.equal(text, "nil")) return Tok.NIL;
+			'o' => if (Strings.equal(text, "or")) return Tok.OR;
+			'p' => if (Strings.equal(text, "print")) return Tok.PRINT;
+			'r' => if (Strings.equal(text, "return")) return Tok.RETURN;
+			's' => if (Strings.equal(text, "super")) return Tok.SUPER;
+			't' => {
+				if (Strings.equal(text, "this")) return Tok.THIS;
+				if (Strings.equal(text, "true")) return Tok.TRUE;
+			}
+			'v' => if (Strings.equal(text, "var")) return Tok.VAR;
+			'w' => if (Strings.equal(text, "while")) return Tok.WHILE;
+			_ => ;
+		}
+		return Tok.IDENT;
+	}
+	private def number() -> Token {
+		while (pos < src.length && isDigit(src[pos])) pos++;
+		if (pos + 1 < src.length && src[pos] == '.' && isDigit(src[pos + 1])) {
+			pos++;
+			while (pos < src.length && isDigit(src[pos])) pos++;
+		}
+		var text = Arrays.range(src, start, pos);
+		var t = Token.new(Tok.NUMBER, text, span());
+		t.num = Numbers.parse(text);
+		return t;
+	}
+	private def str() -> Token {
+		var buf = StringBuilder.new();
+		while (pos < src.length && src[pos] != '\"') {
+			var c = src[pos++];
+			if (c == '\n') newline();
+			buf.putc(c);
+		}
+		if (pos >= src.length) return error("Unterminated string.");
+		pos++; // closing quote
+		var t = Token.new(Tok.STRING, Arrays.range(src, start, pos), span());
+		t.str = buf.extract();
+		return t;
+	}
+	private def make(kind: Tok) -> Token {
+		return Token.new(kind, Arrays.range(src, start, pos), span());
+	}
+	private def error(msg: string) -> Token {
+		return Token.new(Tok.ERROR, msg, span());
+	}
+	// The range from where the current token started to the current position.
+	private def span() -> Span {
+		return Span(startLine, startCol, line, pos - lineStart + 1);
+	}
+	private def matchc(c: byte) -> bool {
+		if (pos < src.length && src[pos] == c) { pos++; return true; }
+		return false;
+	}
+}
+
+def isDigit(c: byte) -> bool {
+	return c >= '0' && c <= '9';
+}
+def isAlpha(c: byte) -> bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+def isAlphaNum(c: byte) -> bool {
+	return isAlpha(c) || isDigit(c);
+}

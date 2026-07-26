@@ -1,0 +1,81 @@
+// Copyright 2026 Ben L. Titzer. All rights reserved.
+// See LICENSE for details of Apache 2.0 license.
+
+// Exit codes, from sysexits.h, matching the reference Lox implementations so that
+// the shared test suite can check them.
+def EX_OK = 0;
+def EX_USAGE = 64;
+def EX_DATAERR = 65;	// compile error
+def EX_NOINPUT = 66;
+def EX_SOFTWARE = 70;	// runtime error
+
+def USAGE = [
+	"Usage: vlox [options] <script.lox>",
+	"  -d, --disassemble   print the compiled Wasm bytecode and exit",
+	"  -c, --compile-only  compile but do not run",
+	"  -h, --help          show this message"
+];
+
+def usage(buf: StringBuilder) -> StringBuilder {
+	for (i < USAGE.length) {
+		if (i > 0) buf.ln();
+		buf.puts(USAGE[i]);
+	}
+	return buf;
+}
+
+def main(args: Array<string>) -> int {
+	var path: string;
+	var disassemble = false, compileOnly = false;
+	for (arg in args) {
+		if (arg.length > 0 && arg[0] == '-') {
+			if (Strings.equal(arg, "-d") || Strings.equal(arg, "--disassemble")) disassemble = true;
+			else if (Strings.equal(arg, "-c") || Strings.equal(arg, "--compile-only")) compileOnly = true;
+			else if (Strings.equal(arg, "-h") || Strings.equal(arg, "--help")) {
+				Io.print(usage);
+				Io.flush();
+				return EX_OK;
+			} else {
+				return usageError(StringBuilder.put1(_, "vlox: unknown option %s", arg));
+			}
+		} else if (path == null) {
+			path = arg;
+		} else {
+			return usageError(StringBuilder.put1(_, "vlox: unexpected argument %s", arg));
+		}
+	}
+	if (path == null) return usageError(usage);
+
+	var src = System.fileLoad(path);
+	if (src == null) {
+		Io.err(StringBuilder.put1(_, "vlox: could not open file \"%s\".", path));
+		return EX_NOINPUT;
+	}
+
+	var reporter = Reporter.new();
+	var module = Module.new();
+	var tokens = Lexer.new(src).tokenize();
+	var stmts = Parser.new(tokens, reporter).parseProgram();
+	if (reporter.hadError) return EX_DATAERR;
+
+	var script = FuncDecl.new("<script>", FuncKind.SCRIPT, [], stmts)
+		.at(Span(1, 1, 1, 1));
+	Resolver.new(module, reporter).resolveScript(script);
+	if (reporter.hadError) return EX_DATAERR;
+
+	Compiler.new(module, reporter).compileModule();
+	if (reporter.hadError) return EX_DATAERR;
+
+	if (disassemble) {
+		Io.print(Disassembler.new(module).renderModule);
+		Io.flush();
+		return EX_OK;
+	}
+	if (compileOnly) return EX_OK;
+	return Interpreter.new(module).run();
+}
+
+def usageError(f: StringBuilder -> StringBuilder) -> int {
+	Io.err(f);
+	return EX_USAGE;
+}

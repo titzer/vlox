@@ -1,0 +1,28 @@
+// A local function that calls itself captures its own binding, so the cell has to
+// exist before the closure is built.
+{
+  fun fact(n) {
+    if (n <= 1) return 1;
+    return n * fact(n - 1);
+  }
+  print fact(6); // expect: 720
+}
+{
+  fun count(n) {
+    if (n == 0) return "";
+    return "." + count(n - 1);
+  }
+  print count(5); // expect: .....
+}
+// Mutual recursion needs globals: a local declared later is not in scope in the
+// body of an earlier one (see lox/function/local_mutual_recursion.lox).
+fun isEven(n) {
+  if (n == 0) return true;
+  return isOdd(n - 1);
+}
+fun isOdd(n) {
+  if (n == 0) return false;
+  return isEven(n - 1);
+}
+print isEven(10); // expect: true
+print isOdd(10);  // expect: false

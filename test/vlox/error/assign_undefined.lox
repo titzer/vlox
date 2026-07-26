@@ -1,0 +1,1 @@
+notDeclaredAnywhere = 3; // expect runtime error: Undefined variable 'notDeclaredAnywhere'.

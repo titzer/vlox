@@ -1,0 +1,19 @@
+// A variable captured through five levels of nesting becomes an upvalue in each
+// intervening function, so the capture list of every one of them must thread it.
+fun a() {
+  var x = "captured";
+  fun b() {
+    fun c() {
+      fun d() {
+        fun e() {
+          return x;
+        }
+        return e();
+      }
+      return d();
+    }
+    return c();
+  }
+  return b();
+}
+print a(); // expect: captured

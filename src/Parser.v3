@@ -1,0 +1,363 @@
+// Copyright 2026 Ben L. Titzer. All rights reserved.
+// See LICENSE for details of Apache 2.0 license.
+
+// Recursive-descent parser for Lox.
+//
+// Error recovery is deliberately identical to clox's: an error sets panic mode,
+// which suppresses every subsequent message until {synchronize} finds a statement
+// boundary. That is what makes the expected-error sets in the reference test suite
+// come out right.
+class Parser(tokens: Vector<Token>, reporter: Reporter) {
+	private var pos: int;
+	private var previous: Token;
+
+	// program -> declaration* EOF
+	def parseProgram() -> Array<Stmt> {
+		// Scanner error tokens are reported at the point they would have been
+		// consumed, exactly as clox's advance() does.
+		skipErrors();
+		var stmts = Vector<Stmt>.new();
+		while (!check(Tok.EOF)) {
+			var d = declaration();
+			if (d != null) stmts.put(d);
+		}
+		return stmts.extract();
+	}
+
+	// ---- declarations ------------------------------------------------------------
+
+	private def declaration() -> Stmt {
+		var start = peek(), d: Stmt;
+		if (matchTok(Tok.CLASS)) d = classDeclaration();
+		else if (matchTok(Tok.FUN)) d = funDeclaration();
+		else if (matchTok(Tok.VAR)) d = varDeclaration();
+		else d = statement();
+		if (d != null && d.span.endLine == 0) d.at(spanFrom(start));
+		if (reporter.panicMode) synchronize();
+		return d;
+	}
+	private def classDeclaration() -> Stmt {
+		consume(Tok.IDENT, "Expect class name.");
+		var name = previous;
+		var superclass: VarExpr;
+		if (matchTok(Tok.LESS)) {
+			consume(Tok.IDENT, "Expect superclass name.");
+			superclass = VarExpr.new(previous).at(previous.span);
+			// Syntactic, like clox: reporting it here means the ensuing panic
+			// mode and resynchronization behave identically.
+			if (Strings.equal(previous.text, name.text)) {
+				reporter.errorAt(previous, "A class can't inherit from itself.");
+			}
+		}
+		consume(Tok.LBRACE, "Expect '{' before class body.");
+		var methods = Vector<FuncDecl>.new();
+		while (!check(Tok.RBRACE) && !check(Tok.EOF)) {
+			if (!check(Tok.IDENT)) {	// skip junk; guarantees progress
+				reporter.errorAt(peek(), "Expect method name.");
+				advance();
+				continue;
+			}
+			advance();
+			var mname = previous;
+			var kind = if(Strings.equal(mname.text, "init"), FuncKind.INITIALIZER, FuncKind.METHOD);
+			methods.put(function(mname, kind));
+		}
+		consume(Tok.RBRACE, "Expect '}' after class body.");
+		return ClassStmt.new(name, superclass, methods.extract());
+	}
+	private def funDeclaration() -> Stmt {
+		consume(Tok.IDENT, "Expect function name.");
+		var name = previous;
+		return FunStmt.new(name, function(name, FuncKind.FUNCTION));
+	}
+	// The shared tail of a function or method: parameter list plus body block.
+	private def function(name: Token, kind: FuncKind) -> FuncDecl {
+		consume(Tok.LPAREN, "Expect '(' after function name.");
+		var params = Vector<Token>.new();
+		if (!check(Tok.RPAREN)) {
+			while (true) {
+				if (params.length >= 255) {
+					reporter.errorAt(peek(), "Can't have more than 255 parameters.");
+				}
+				consume(Tok.IDENT, "Expect parameter name.");
+				params.put(previous);
+				if (!matchTok(Tok.COMMA)) break;
+			}
+		}
+		consume(Tok.RPAREN, "Expect ')' after parameters.");
+		consume(Tok.LBRACE, "Expect '{' before function body.");
+		var body = block();
+		return FuncDecl.new(name.text, kind, params.extract(), body).at(spanFrom(name));
+	}
+	private def varDeclaration() -> Stmt {
+		consume(Tok.IDENT, "Expect variable name.");
+		var name = previous;
+		var init: Expr;
+		if (matchTok(Tok.EQUAL)) init = expression();
+		consume(Tok.SEMICOLON, "Expect ';' after variable declaration.");
+		return VarStmt.new(name, init);
+	}
+
+	// ---- statements --------------------------------------------------------------
+
+	private def statement() -> Stmt {
+		var start = peek();
+		var s = statementBody();
+		if (s.span.endLine == 0) s.at(spanFrom(start));
+		return s;
+	}
+	private def statementBody() -> Stmt {
+		if (matchTok(Tok.PRINT)) return printStatement();
+		if (matchTok(Tok.FOR)) return forStatement();
+		if (matchTok(Tok.IF)) return ifStatement();
+		if (matchTok(Tok.RETURN)) return returnStatement();
+		if (matchTok(Tok.WHILE)) return whileStatement();
+		if (matchTok(Tok.LBRACE)) return BlockStmt.new(block());
+		return expressionStatement();
+	}
+	private def printStatement() -> Stmt {
+		var e = expression();
+		consume(Tok.SEMICOLON, "Expect ';' after value.");
+		return PrintStmt.new(e);
+	}
+	private def expressionStatement() -> Stmt {
+		var e = expression();
+		consume(Tok.SEMICOLON, "Expect ';' after expression.");
+		return ExprStmt.new(e);
+	}
+	private def ifStatement() -> Stmt {
+		consume(Tok.LPAREN, "Expect '(' after 'if'.");
+		var cond = expression();
+		consume(Tok.RPAREN, "Expect ')' after condition.");
+		var thenArm = statement();
+		var elseArm: Stmt;
+		if (matchTok(Tok.ELSE)) elseArm = statement();
+		return IfStmt.new(cond, thenArm, elseArm);
+	}
+	private def whileStatement() -> Stmt {
+		consume(Tok.LPAREN, "Expect '(' after 'while'.");
+		var cond = expression();
+		consume(Tok.RPAREN, "Expect ')' after condition.");
+		return WhileStmt.new(cond, statement());
+	}
+	private def forStatement() -> Stmt {
+		consume(Tok.LPAREN, "Expect '(' after 'for'.");
+		var init: Stmt;
+		if (matchTok(Tok.SEMICOLON)) ;			// no initializer
+		else if (matchTok(Tok.VAR)) {
+			var start = previous;
+			init = varDeclaration().at(spanFrom(start));
+		} else {
+			var start = peek();
+			init = expressionStatement().at(spanFrom(start));
+		}
+		var cond: Expr;
+		if (!check(Tok.SEMICOLON)) cond = expression();
+		consume(Tok.SEMICOLON, "Expect ';' after loop condition.");
+		var incr: Expr;
+		if (!check(Tok.RPAREN)) incr = expression();
+		consume(Tok.RPAREN, "Expect ')' after for clauses.");
+		return ForStmt.new(init, cond, incr, statement());
+	}
+	private def returnStatement() -> Stmt {
+		var keyword = previous;
+		var value: Expr;
+		if (!check(Tok.SEMICOLON)) value = expression();
+		consume(Tok.SEMICOLON, "Expect ';' after return value.");
+		return ReturnStmt.new(keyword, value);
+	}
+	private def block() -> Array<Stmt> {
+		var stmts = Vector<Stmt>.new();
+		while (!check(Tok.RBRACE) && !check(Tok.EOF)) {
+			var d = declaration();
+			if (d != null) stmts.put(d);
+		}
+		consume(Tok.RBRACE, "Expect '}' after block.");
+		return stmts.extract();
+	}
+
+	// ---- expressions -------------------------------------------------------------
+
+	private def expression() -> Expr {
+		return assignment();
+	}
+	private def assignment() -> Expr {
+		var left = or();
+		if (matchTok(Tok.EQUAL)) {
+			var equals = previous;
+			var value = assignment();
+			var span = left.span.plus(value.span);
+			if (VarExpr.?(left) && !left.grouped) return AssignExpr.new(VarExpr.!(left).name, value).at(span);
+			if (GetExpr.?(left) && !left.grouped) {
+				var g = GetExpr.!(left);
+				return SetExpr.new(g.obj, g.name, value).at(span);
+			}
+			reporter.errorAt(equals, "Invalid assignment target.");
+		}
+		return left;
+	}
+	private def or() -> Expr {
+		var left = and();
+		while (matchTok(Tok.OR)) {
+			var op = previous, right = and();
+			left = LogicalExpr.new(op, left, right).at(left.span.plus(right.span));
+		}
+		return left;
+	}
+	private def and() -> Expr {
+		var left = equality();
+		while (matchTok(Tok.AND)) {
+			var op = previous, right = equality();
+			left = LogicalExpr.new(op, left, right).at(left.span.plus(right.span));
+		}
+		return left;
+	}
+	private def equality() -> Expr {
+		var left = comparison();
+		while (check(Tok.BANG_EQUAL) || check(Tok.EQUAL_EQUAL)) {
+			advance();
+			var op = previous, right = comparison();
+			left = BinaryExpr.new(op, left, right).at(left.span.plus(right.span));
+		}
+		return left;
+	}
+	private def comparison() -> Expr {
+		var left = term();
+		while (check(Tok.GREATER) || check(Tok.GREATER_EQUAL)
+			|| check(Tok.LESS) || check(Tok.LESS_EQUAL)) {
+			advance();
+			var op = previous, right = term();
+			left = BinaryExpr.new(op, left, right).at(left.span.plus(right.span));
+		}
+		return left;
+	}
+	private def term() -> Expr {
+		var left = factor();
+		while (check(Tok.MINUS) || check(Tok.PLUS)) {
+			advance();
+			var op = previous, right = factor();
+			left = BinaryExpr.new(op, left, right).at(left.span.plus(right.span));
+		}
+		return left;
+	}
+	private def factor() -> Expr {
+		var left = unary();
+		while (check(Tok.SLASH) || check(Tok.STAR)) {
+			advance();
+			var op = previous, right = unary();
+			left = BinaryExpr.new(op, left, right).at(left.span.plus(right.span));
+		}
+		return left;
+	}
+	private def unary() -> Expr {
+		if (check(Tok.BANG) || check(Tok.MINUS)) {
+			advance();
+			var op = previous, operand = unary();
+			return UnaryExpr.new(op, operand).at(op.span.plus(operand.span));
+		}
+		return call();
+	}
+	private def call() -> Expr {
+		var e = primary();
+		while (true) {
+			if (matchTok(Tok.LPAREN)) e = finishCall(e);
+			else if (matchTok(Tok.DOT)) {
+				consume(Tok.IDENT, "Expect property name after '.'.");
+				e = GetExpr.new(e, previous).at(e.span.plus(previous.span));
+			} else break;
+		}
+		return e;
+	}
+	private def finishCall(callee: Expr) -> Expr {
+		var args = Vector<Expr>.new();
+		if (!check(Tok.RPAREN)) {
+			while (true) {
+				args.put(expression());
+				if (args.length > 255) {
+					reporter.errorAt(previous, "Can't have more than 255 arguments.");
+				}
+				if (!matchTok(Tok.COMMA)) break;
+			}
+		}
+		consume(Tok.RPAREN, "Expect ')' after arguments.");
+		return CallExpr.new(callee, args.extract()).at(callee.span.plus(previous.span));
+	}
+	private def primary() -> Expr {
+		var t = peek();
+		match (t.kind) {
+			FALSE => { advance(); return LiteralExpr.new(Value.Bool(false)).at(t.span); }
+			TRUE => { advance(); return LiteralExpr.new(Value.Bool(true)).at(t.span); }
+			NIL => { advance(); return LiteralExpr.new(Value.Nil).at(t.span); }
+			NUMBER => { advance(); return LiteralExpr.new(Value.Num(t.num)).at(t.span); }
+			STRING => { advance(); return StringExpr.new(t).at(t.span); }
+			IDENT => { advance(); return VarExpr.new(t).at(t.span); }
+			THIS => { advance(); return ThisExpr.new(t).at(t.span); }
+			SUPER => {
+				advance();
+				var keyword = t;
+				consume(Tok.DOT, "Expect '.' after 'super'.");
+				consume(Tok.IDENT, "Expect superclass method name.");
+				return SuperExpr.new(keyword, previous).at(keyword.span.plus(previous.span));
+			}
+			LPAREN => {
+				advance();
+				var e = expression();
+				consume(Tok.RPAREN, "Expect ')' after expression.");
+				return e.at(t.span.plus(previous.span)).group();
+			}
+			_ => {
+				// clox reports this against the token it just advanced past, so
+				// consume the offender to guarantee progress.
+				advance();
+				reporter.errorAt(t, "Expect expression.");
+				return LiteralExpr.new(Value.Nil).at(t.span);
+			}
+		}
+	}
+
+	// ---- token plumbing ----------------------------------------------------------
+
+	private def peek() -> Token {
+		return tokens[pos];
+	}
+	// The range from the start of {start} through the end of the last token
+	// consumed, which is how Virgil's own parser builds VST ranges.
+	private def spanFrom(start: Token) -> Span {
+		return start.span.plus(if(previous != null, previous.span, start.span));
+	}
+	private def check(kind: Tok) -> bool {
+		return tokens[pos].kind == kind;
+	}
+	private def advance() {
+		previous = tokens[pos];
+		if (tokens[pos].kind != Tok.EOF) pos++;
+		skipErrors();
+	}
+	private def skipErrors() {
+		while (tokens[pos].kind == Tok.ERROR) {
+			reporter.errorAt(tokens[pos], tokens[pos].text);
+			pos++;
+		}
+	}
+	private def matchTok(kind: Tok) -> bool {
+		if (!check(kind)) return false;
+		advance();
+		return true;
+	}
+	private def consume(kind: Tok, msg: string) {
+		if (check(kind)) { advance(); return; }
+		reporter.errorAt(peek(), msg);
+	}
+	// Skip forward to something that plausibly starts a fresh statement, then clear
+	// panic mode so that genuinely independent errors are still reported.
+	private def synchronize() {
+		reporter.panicMode = false;
+		while (!check(Tok.EOF)) {
+			if (previous != null && previous.kind == Tok.SEMICOLON) return;
+			match (peek().kind) {
+				CLASS, FUN, VAR, FOR, IF, WHILE, PRINT, RETURN => return;
+				_ => advance();
+			}
+		}
+	}
+}

@@ -1,0 +1,6 @@
+// A captured local is boxed; the closure captures the cell.
+fun outer() {
+  var n = 1;
+  fun inner() { n = n + 1; return n; }
+  return inner;
+}

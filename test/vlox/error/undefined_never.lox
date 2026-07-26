@@ -1,0 +1,6 @@
+// A global that is never defined is only diagnosed when the read executes.
+fun useNever() {
+  return neverDefined; // expect runtime error: Undefined variable 'neverDefined'.
+}
+print "before";  // expect: before
+useNever();

@@ -1,0 +1,311 @@
+// Copyright 2026 Ben L. Titzer. All rights reserved.
+// See LICENSE for details of Apache 2.0 license.
+
+// Resolves every name to a storage location and decides which locals must be boxed.
+//
+// clox does this inline in its single-pass compiler and pays for it with open
+// upvalues, an upvalue list threaded through the stack, and an OP_CLOSE_UPVALUE at
+// every scope exit. Wasm locals are not addressable, so none of that machinery can
+// work here. Instead this pass runs first and marks each captured local; the
+// compiler then stores those in a heap cell from the moment they are declared, and
+// closures capture the cell. That is both simpler and closer to what a real Wasm
+// producer must do.
+
+// A local variable binding in some lexical scope.
+class Local(name: string, ref: VarRef) {
+	var initialized: bool;
+}
+
+// Per-function resolution state.
+class FuncState(enclosing: FuncState, decl: FuncDecl) {
+	def scopes = Vector<Vector<Local>>.new();
+	var nextSlot: int = 1;	// slot 0 is the callee (closure, or receiver)
+
+	def allocSlot() -> int {
+		var slot = nextSlot++;
+		if (nextSlot > decl.numLocals) decl.numLocals = nextSlot;
+		return slot;
+	}
+}
+
+// Tracks whether `super` is legal in the class body currently being resolved.
+class ClassState(hasSuperclass: bool) { }
+
+class Resolver(module: Module, reporter: Reporter) {
+	private var fs: FuncState;
+	private def classes = Vector<ClassState>.new();
+
+	// Resolve the whole program. {script} is the implicit top-level function.
+	def resolveScript(script: FuncDecl) {
+		module.addFunc(script);
+		script.numLocals = 1;
+		fs = FuncState.new(null, script);
+		script.paramRefs = [];
+		resolveAll(script.body);
+		fs = null;
+	}
+
+	// ---- statements --------------------------------------------------------------
+
+	private def resolveAll(stmts: Array<Stmt>) {
+		for (s in stmts) {
+			// clox resynchronizes after every declaration, which lets two
+			// independent errors in a row both be reported. Statement
+			// boundaries are the same recovery points here.
+			reporter.panicMode = false;
+			resolveStmt(s);
+		}
+	}
+	private def resolveStmt(s: Stmt) {
+		match (s) {
+			x: ExprStmt => resolveExpr(x.expr);
+			x: PrintStmt => resolveExpr(x.expr);
+			x: VarStmt => {
+				// Declare before resolving the initializer so that
+				// `var a = a;` inside a function is caught, but define
+				// only after, so the initializer sees the outer binding.
+				var ref = declare(x.name);
+				x.ref = ref;
+				if (x.init != null) resolveExpr(x.init);
+				markInitialized(x.name.text);
+			}
+			x: BlockStmt => {
+				beginScope();
+				resolveAll(x.stmts);
+				endScope();
+			}
+			x: IfStmt => {
+				resolveExpr(x.cond);
+				resolveStmt(x.thenArm);
+				if (x.elseArm != null) resolveStmt(x.elseArm);
+			}
+			x: WhileStmt => {
+				resolveExpr(x.cond);
+				resolveStmt(x.body);
+			}
+			x: ForStmt => {
+				// The initializer's variable is scoped to the loop but
+				// declared once, so closures made in the body share it.
+				beginScope();
+				if (x.init != null) resolveStmt(x.init);
+				if (x.cond != null) resolveExpr(x.cond);
+				if (x.incr != null) resolveExpr(x.incr);
+				resolveStmt(x.body);
+				endScope();
+			}
+			x: ReturnStmt => {
+				if (fs.decl.kind == FuncKind.SCRIPT) {
+					reporter.errorAt(x.keyword, "Can't return from top-level code.");
+				}
+				if (x.value != null) {
+					if (fs.decl.kind == FuncKind.INITIALIZER) {
+						reporter.errorAt(x.keyword, "Can't return a value from an initializer.");
+					}
+					resolveExpr(x.value);
+				}
+			}
+			x: FunStmt => {
+				// Defined immediately, so that the body can call itself.
+				x.ref = declare(x.name);
+				markInitialized(x.name.text);
+				resolveFunction(x.func);
+			}
+			x: ClassStmt => resolveClass(x);
+			_ => ;
+		}
+	}
+	private def resolveClass(x: ClassStmt) {
+		x.ref = declare(x.name);
+		markInitialized(x.name.text);
+		classes.put(ClassState.new(x.superclass != null));
+		if (x.superclass != null) {
+			resolveExpr(x.superclass);
+			// A hidden binding holding the superclass. Methods that mention
+			// `super` capture it, which is what makes multi-level `super`
+			// dispatch lexical rather than dynamic.
+			beginScope();
+			var local = declareLocal(SUPER);
+			local.initialized = true;
+			x.superRef = local.ref;
+		}
+		for (m in x.methods) resolveFunction(m);
+		if (x.superclass != null) endScope();
+		classes.resize(classes.length - 1);
+	}
+	private def resolveFunction(decl: FuncDecl) {
+		module.addFunc(decl);
+		decl.numLocals = 1;
+		fs = FuncState.new(fs, decl);
+		beginScope();
+		if (decl.kind == FuncKind.METHOD || decl.kind == FuncKind.INITIALIZER) {
+			// The receiver occupies slot 0 and is reachable as `this`.
+			var self = Local.new(THIS, VarRef.new(THIS));
+			self.ref.kind = VarKind.LOCAL;
+			self.ref.index = 0;
+			self.initialized = true;
+			fs.scopes[0].put(self);
+			decl.selfRef = self.ref;
+		}
+		var refs = Array<VarRef>.new(decl.params.length);
+		for (i < decl.params.length) {
+			var ref = declare(decl.params[i]);
+			markInitialized(decl.params[i].text);
+			refs[i] = ref;
+		}
+		decl.paramRefs = refs;
+		resolveAll(decl.body);
+		endScope();
+		fs = fs.enclosing;
+	}
+
+	// ---- expressions -------------------------------------------------------------
+
+	private def resolveExpr(e: Expr) {
+		match (e) {
+			x: LiteralExpr => ;
+			x: StringExpr => ;
+			x: VarExpr => x.ref = resolveName(x.name);
+			x: AssignExpr => {
+				resolveExpr(x.value);
+				x.ref = resolveName(x.name);
+			}
+			x: UnaryExpr => resolveExpr(x.operand);
+			x: BinaryExpr => { resolveExpr(x.left); resolveExpr(x.right); }
+			x: LogicalExpr => { resolveExpr(x.left); resolveExpr(x.right); }
+			x: CallExpr => {
+				resolveExpr(x.callee);
+				for (a in x.args) resolveExpr(a);
+			}
+			x: GetExpr => resolveExpr(x.obj);
+			x: SetExpr => { resolveExpr(x.obj); resolveExpr(x.value); }
+			x: ThisExpr => {
+				if (classes.length == 0) {
+					reporter.errorAt(x.keyword, "Can't use 'this' outside of a class.");
+					return;
+				}
+				x.ref = resolveName(x.keyword);
+			}
+			x: SuperExpr => {
+				if (classes.length == 0) {
+					reporter.errorAt(x.keyword, "Can't use 'super' outside of a class.");
+					return;
+				}
+				if (!classes[classes.length - 1].hasSuperclass) {
+					reporter.errorAt(x.keyword, "Can't use 'super' in a class with no superclass.");
+					return;
+				}
+				x.superRef = resolveSynthetic(SUPER);
+				x.thisRef = resolveSynthetic(THIS);
+			}
+			_ => ;
+		}
+	}
+
+	// ---- scopes and name lookup ----------------------------------------------------
+
+	private def beginScope() {
+		fs.scopes.put(Vector<Local>.new());
+	}
+	private def endScope() {
+		fs.scopes.resize(fs.scopes.length - 1);
+	}
+	// Declare {name} in the innermost scope, or as a module global at the top level
+	// of the script.
+	private def declare(name: Token) -> VarRef {
+		if (atGlobalScope()) {
+			var ref = VarRef.new(name.text);
+			ref.kind = VarKind.GLOBAL;
+			ref.index = module.globalFor(name.text);
+			return ref;
+		}
+		var scope = fs.scopes[fs.scopes.length - 1];
+		for (i = scope.length - 1; i >= 0; i--) {
+			if (Strings.equal(scope[i].name, name.text)) {
+				reporter.errorAt(name, "Already a variable with this name in this scope.");
+				break;
+			}
+		}
+		return declareLocal(name.text).ref;
+	}
+	private def declareLocal(name: string) -> Local {
+		var ref = VarRef.new(name);
+		ref.kind = VarKind.LOCAL;
+		ref.index = fs.allocSlot();
+		var local = Local.new(name, ref);
+		fs.scopes[fs.scopes.length - 1].put(local);
+		return local;
+	}
+	private def markInitialized(name: string) {
+		if (atGlobalScope()) return;
+		var scope = fs.scopes[fs.scopes.length - 1];
+		for (i = scope.length - 1; i >= 0; i--) {
+			if (Strings.equal(scope[i].name, name)) { scope[i].initialized = true; return; }
+		}
+	}
+	private def atGlobalScope() -> bool {
+		return fs.decl.kind == FuncKind.SCRIPT && fs.scopes.length == 0;
+	}
+	// Resolve a use of {name}: innermost local, else an upvalue of some enclosing
+	// function, else a module global.
+	private def resolveName(name: Token) -> VarRef {
+		var local = findLocal(fs, name.text);
+		if (local != null) {
+			if (!local.initialized) {
+				reporter.errorAt(name, "Can't read local variable in its own initializer.");
+			}
+			return local.ref;
+		}
+		return resolveSynthetic(name.text);
+	}
+	// Like {resolveName} but for compiler-introduced bindings ("this", "super"),
+	// which are always already initialized.
+	private def resolveSynthetic(name: string) -> VarRef {
+		var local = findLocal(fs, name);
+		if (local != null) return local.ref;
+		var up = resolveUpvalue(fs, name);
+		if (up >= 0) {
+			var ref = VarRef.new(name);
+			ref.kind = VarKind.UPVALUE;
+			ref.index = up;
+			ref.boxed = true;	// upvalues are always cells
+			return ref;
+		}
+		var ref = VarRef.new(name);
+		ref.kind = VarKind.GLOBAL;
+		ref.index = module.globalFor(name);
+		return ref;
+	}
+	private def findLocal(f: FuncState, name: string) -> Local {
+		for (i = f.scopes.length - 1; i >= 0; i--) {
+			var scope = f.scopes[i];
+			for (j = scope.length - 1; j >= 0; j--) {
+				if (Strings.equal(scope[j].name, name)) return scope[j];
+			}
+		}
+		return null;
+	}
+	// Find {name} in an enclosing function, threading an upvalue through every
+	// intervening closure. Marks the original local as boxed.
+	private def resolveUpvalue(f: FuncState, name: string) -> int {
+		if (f.enclosing == null) return -1;
+		var local = findLocal(f.enclosing, name);
+		if (local != null) {
+			local.ref.boxed = true;
+			return addUpvalue(f, Capture.FromLocal(local.ref.index));
+		}
+		var up = resolveUpvalue(f.enclosing, name);
+		if (up >= 0) return addUpvalue(f, Capture.FromUpvalue(up));
+		return -1;
+	}
+	private def addUpvalue(f: FuncState, cap: Capture) -> int {
+		var caps = f.decl.captures;
+		for (i < caps.length) {
+			if (caps[i] == cap) return i;
+		}
+		caps.put(cap);
+		return caps.length - 1;
+	}
+}
+
+def THIS = "this";
+def SUPER = "super";

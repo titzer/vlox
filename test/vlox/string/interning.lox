@@ -1,0 +1,9 @@
+// Strings are interned, so equality is by contents no matter how they were built.
+var a = "foo";
+var b = "f" + "oo";
+print a == b;     // expect: true
+class Box {}
+var box = Box();
+box.foo = 1;
+var key = "f" + "oo";
+print box.foo;    // expect: 1

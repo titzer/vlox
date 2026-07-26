@@ -1,0 +1,19 @@
+// Two closures over the same variable see each other's writes; capture is by
+// reference, which is why captured locals live in a heap cell.
+fun makeCounter() {
+  var n = 0;
+  fun inc() { n = n + 1; }
+  fun get() { return n; }
+  inc(); inc(); inc();
+  return get;
+}
+print makeCounter()(); // expect: 3
+
+fun pair() {
+  var v = "start";
+  fun set(x) { v = x; }
+  fun get() { return v; }
+  set("changed");
+  return get();
+}
+print pair(); // expect: changed

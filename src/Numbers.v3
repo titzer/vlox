@@ -1,0 +1,215 @@
+// Copyright 2026 Ben L. Titzer. All rights reserved.
+// See LICENSE for details of Apache 2.0 license.
+
+// Decimal conversion for Lox numbers.
+//
+// Lox's reference implementation prints numbers with C's "%g": six significant digits,
+// trailing zeros stripped, and a switch to scientific notation outside [1e-4, 1e6).
+// Reproducing that faithfully needs the *exact* decimal expansion of the double,
+// because the rounding decision at the sixth digit depends on every digit after it.
+// So the conversion goes through an exact big integer:
+//
+//   a finite double is m * 2^e with m < 2^53. If e >= 0 the value is the integer
+//   m << e. If e < 0 then m * 2^e == (m * 5^-e) * 10^e, so the digits are those of
+//   the exact integer m * 5^-e with the decimal point shifted -e places left.
+//
+// Either way the result is an exact integer, held here as base-1e9 limbs.
+component Numbers {
+	private def BASE = 1000000000;		// one limb
+	private def BASE64: u64 = 1000000000;
+	private def PRECISION = 6;		// %g default significant digits
+
+	// Render {d} exactly as "%g" would.
+	def render(buf: StringBuilder, d: double) -> StringBuilder {
+		var bits = u64.view(d);
+		var neg = (bits >> 63) != 0;
+		var biased = int.!((bits >> 52) & 0x7FFu64);
+		var frac = bits & 0xF_FFFF_FFFF_FFFFu64;
+		if (biased == 0x7FF) {	// infinity or NaN
+			if (frac != 0) return buf.puts("nan");
+			return buf.puts(if(neg, "-inf", "inf"));
+		}
+		var m: u64, e: int;
+		if (biased == 0) {	// subnormal, or zero
+			if (frac == 0) return buf.puts(if(neg, "-0", "0"));
+			m = frac;
+			e = -1074;
+		} else {
+			m = frac | 0x10_0000_0000_0000u64;
+			e = biased - 1075;
+		}
+		if (neg) buf.putc('-');
+		// The exact value is {digits} (read as an integer) times 10^{scale}.
+		var t = exactDigits(m, e);
+		var digits = t.0, scale = t.1;
+		// {exp10} is the exponent in the normalized form d.ddddd * 10^exp10.
+		var exp10 = digits.length - 1 + scale;
+		var r = roundTo(digits, PRECISION);
+		if (r.1) exp10++;	// rounding carried into a new leading digit
+		digits = r.0;
+		if (exp10 < -4 || exp10 >= PRECISION) return scientific(buf, digits, exp10);
+		return fixed(buf, digits, exp10);
+	}
+	// Parse a Lox number literal. The literal grammar guarantees digits, optionally
+	// followed by '.' and more digits; no sign and no exponent.
+	def parse(text: string) -> double {
+		var i = 0, mant: u64 = 0, ndigits = 0, exp = 0;
+		while (i < text.length && text[i] != '.') {
+			if (ndigits < 19) { mant = mant * 10 + u64.!(text[i] - '0'); ndigits++; }
+			else exp++;
+			i++;
+		}
+		if (i < text.length && text[i] == '.') {
+			i++;
+			while (i < text.length) {
+				if (ndigits < 19) { mant = mant * 10 + u64.!(text[i] - '0'); ndigits++; exp--; }
+				i++;
+			}
+		}
+		var d = double.roundi(mant);
+		if (exp > 0) {
+			for (k < exp) d = d * 10.0;
+		} else if (exp < 0) {
+			// One division by an exactly-representable power of ten keeps the
+			// result correctly rounded for all literals of practical length.
+			var p = 1.0;
+			for (k < 0 - exp) p = p * 10.0;
+			d = d / p;
+		}
+		return d;
+	}
+
+	// ---- exact decimal expansion -------------------------------------------------
+
+	// Return the exact decimal digits of {m} * 2^{e} as (digits, scale); the value
+	// equals {digits} read as an integer, times 10^{scale}.
+	private def exactDigits(m: u64, e: int) -> (string, int) {
+		var limbs = Vector<u32>.new();
+		putU64(limbs, m);
+		var scale = 0;
+		if (e > 0) {
+			shiftLeft(limbs, e);
+		} else if (e < 0) {
+			mulPow5(limbs, 0 - e);
+			scale = e;
+		}
+		return (toDigits(limbs), scale);
+	}
+	private def putU64(limbs: Vector<u32>, m: u64) {
+		var x = m;
+		while (x > 0) {
+			limbs.put(u32.!(x % BASE64));
+			x = x / BASE64;
+		}
+		if (limbs.length == 0) limbs.put(0);
+	}
+	// Multiply the big integer in {limbs} by {n}, which must be below 2^34 so that
+	// each per-limb product fits in u64.
+	private def mulSmall(limbs: Vector<u32>, n: u64) {
+		var carry: u64 = 0;
+		for (i < limbs.length) {
+			var p = u64.!(limbs[i]) * n + carry;
+			limbs[i] = u32.!(p % BASE64);
+			carry = p / BASE64;
+		}
+		while (carry > 0) {
+			limbs.put(u32.!(carry % BASE64));
+			carry = carry / BASE64;
+		}
+	}
+	private def shiftLeft(limbs: Vector<u32>, bits: int) {
+		var n = bits;
+		while (n >= 30) { mulSmall(limbs, 0x4000_0000u64); n -= 30; }
+		var f: u64 = 1;
+		for (i < n) f = f * 2;
+		if (f > 1) mulSmall(limbs, f);
+	}
+	// Multiply by 5^{k}, twelve powers at a time (5^12 = 244140625 < 2^28).
+	private def mulPow5(limbs: Vector<u32>, k: int) {
+		var n = k;
+		while (n >= 12) { mulSmall(limbs, 244140625); n -= 12; }
+		while (n > 0) { mulSmall(limbs, 5); n--; }
+	}
+	// Decimal digits of the big integer, most significant first, no leading zeros.
+	private def toDigits(limbs: Vector<u32>) -> string {
+		var top = limbs.length - 1;
+		while (top > 0 && limbs[top] == 0) top--;
+		var buf = StringBuilder.new();
+		buf.putd(limbs[top]);
+		for (i = top - 1; i >= 0; i--) {
+			var v = int.!(limbs[i]), div = BASE / 10;
+			while (div > 0) {
+				buf.putc(byte.!('0' + (v / div) % 10));
+				div = div / 10;
+			}
+		}
+		return buf.extract();
+	}
+	// Round {digits} to {n} significant digits, half-to-even on the exact remainder.
+	// Also returns whether rounding carried into a new digit position, i.e. "999"
+	// became "100" and the caller must bump the exponent.
+	private def roundTo(digits: string, n: int) -> (string, bool) {
+		if (digits.length <= n) return (digits, false);
+		var kept = Arrays.range(digits, 0, n);
+		var d = digits[n];
+		var roundUp = false;
+		if (d > '5') {
+			roundUp = true;
+		} else if (d == '5') {
+			var rest = false;
+			for (i = n + 1; i < digits.length; i++) {
+				if (digits[i] != '0') { rest = true; break; }
+			}
+			roundUp = rest || ((kept[n - 1] - '0') % 2) != 0;
+		}
+		if (!roundUp) return (kept, false);
+		for (i = n - 1; i >= 0; i--) {
+			if (kept[i] != '9') { kept[i] = byte.!(kept[i] + 1); return (kept, false); }
+			kept[i] = '0';
+		}
+		kept[0] = '1';
+		return (kept, true);
+	}
+
+	// ---- %g output forms ---------------------------------------------------------
+
+	// d.dddddesxx, with trailing zeros in the fraction stripped.
+	private def scientific(buf: StringBuilder, digits: string, exp10: int) -> StringBuilder {
+		var end = trimmedLength(digits, 1);
+		buf.putc(digits[0]);
+		if (end > 1) {
+			buf.putc('.');
+			for (i = 1; i < end; i++) buf.putc(digits[i]);
+		}
+		buf.putc('e');
+		var e = exp10;
+		if (e < 0) { buf.putc('-'); e = 0 - e; } else buf.putc('+');
+		if (e < 10) buf.putc('0');
+		buf.putd(e);
+		return buf;
+	}
+	// Positional notation, with trailing fraction zeros stripped.
+	private def fixed(buf: StringBuilder, digits: string, exp10: int) -> StringBuilder {
+		var intLen = exp10 + 1;
+		if (intLen <= 0) {
+			var end = trimmedLength(digits, 1);
+			buf.puts("0.");
+			for (i < 0 - intLen) buf.putc('0');
+			for (i < end) buf.putc(digits[i]);
+			return buf;
+		}
+		var end = trimmedLength(digits, intLen);
+		for (i < intLen) buf.putc(if(i < digits.length, digits[i], '0'));
+		if (end > intLen) {
+			buf.putc('.');
+			for (i = intLen; i < end; i++) buf.putc(digits[i]);
+		}
+		return buf;
+	}
+	// Length of {digits} after stripping trailing '0's, but never below {min}.
+	private def trimmedLength(digits: string, min: int) -> int {
+		var end = digits.length;
+		while (end > min && digits[end - 1] == '0') end--;
+		return end;
+	}
+}

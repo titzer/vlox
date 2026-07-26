@@ -1,0 +1,19 @@
+// `super` is resolved lexically, from a hidden binding captured by each method's
+// closure. Resolving it dynamically from the receiver's class would loop forever
+// on a three-deep chain like this one.
+class A {
+  who() { return "A"; }
+}
+class B < A {
+  who() { return "B->" + super.who(); }
+}
+class C < B {
+  who() { return "C->" + super.who(); }
+}
+print C().who();  // expect: C->B->A
+print B().who();  // expect: B->A
+print A().who();  // expect: A
+
+// The same, reached through a method that a subclass did not override.
+class D < C { }
+print D().who();  // expect: C->B->A

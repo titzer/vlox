@@ -1,0 +1,16 @@
+// Captured parameters arrive in a plain Wasm local and are boxed by the prologue.
+fun outer(a, b) {
+  fun inner() { return a + b; }
+  a = a + 10;
+  return inner();
+}
+print outer(1, 2); // expect: 13
+
+class Holder {
+  init(v) { this.v = v; }
+  getter() {
+    fun f() { return this.v; }   // captures `this`
+    return f;
+  }
+}
+print Holder("held").getter()(); // expect: held

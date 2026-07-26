@@ -1,0 +1,16 @@
+// A class declared in a local scope whose methods refer to the class itself.
+{
+  class Node {
+    init(v) { this.v = v; }
+    make(v) { return Node(v); }
+    kind() { return Node; }
+  }
+  var n = Node(1);
+  print n.make(2).v;    // expect: 2
+  print n.kind();       // expect: Node
+}
+fun scoped() {
+  class Inner { hi() { return "inner"; } }
+  return Inner();
+}
+print scoped().hi();    // expect: inner

@@ -1,0 +1,7 @@
+// Field access, method definition, inheritance and the fused invoke form.
+class Base { m(x) { return x; } }
+class Derived < Base {
+  init(v) { this.v = v; }
+  m(x) { return super.m(x) + this.v; }
+}
+Derived(1).m(2);

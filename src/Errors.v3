@@ -1,0 +1,58 @@
+// Copyright 2026 Ben L. Titzer. All rights reserved.
+// See LICENSE for details of Apache 2.0 license.
+
+// Buffered standard output. Lox programs that print in a loop should not pay a
+// write syscall per line, but the buffer must be flushed before the process exits
+// on a runtime error, so every exit path in Main goes through {Io.flush}.
+component Io {
+	def STDOUT = 1;
+	def STDERR = 2;
+	private def buf = StringBuilder.new();
+
+	def print(f: StringBuilder -> StringBuilder) {
+		f(buf).ln();
+		if (buf.length >= 8192) flush();
+	}
+	def flush() {
+		if (buf.length > 0) {
+			System.write(STDOUT, buf.buf[0 ... buf.length]);
+			buf.reset();
+		}
+	}
+	def err(f: StringBuilder -> StringBuilder) {
+		flush();	// keep the two streams in source order when merged
+		var b = StringBuilder.new();
+		f(b).ln();
+		System.write(STDERR, b.buf[0 ... b.length]);
+	}
+}
+
+// Collects compile-time (scan, parse, resolve) errors.
+//
+// Panic mode mirrors clox: after an error is reported, further errors are silently
+// dropped until the parser resynchronizes at a statement boundary. Without it a
+// single stray token produces a cascade of bogus messages.
+class Reporter {
+	var hadError: bool;
+	var panicMode: bool;
+
+	// Report at {token}, in clox's exact format:
+	//   [line 3] Error at 'foo': Expect ';' after expression.
+	//   [line 3] Error at end: Expect '}' after block.
+	//   [line 3] Error: Unexpected character.        (a scanner error token)
+	def errorAt(token: Token, msg: string) {
+		if (panicMode) return;
+		panicMode = true;
+		hadError = true;
+		Io.err(render(_, token, msg));
+	}
+	private def render(buf: StringBuilder, token: Token, msg: string) -> StringBuilder {
+		buf.put1("[line %d] Error", token.line());
+		match (token.kind) {
+			EOF => buf.puts(" at end");
+			ERROR => ;	// the message is the whole story
+			_ => buf.put1(" at '%s'", token.text);
+		}
+		return buf.put1(": %s", msg);
+	}
+}

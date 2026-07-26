@@ -1,0 +1,13 @@
+// Methods are copied down at `inherit` time, so an override later in the subclass
+// body simply replaces the inherited entry, and lookup never walks a chain.
+class L0 { a() { return "L0.a"; } b() { return "L0.b"; } }
+class L1 < L0 { b() { return "L1.b"; } c() { return "L1.c"; } }
+class L2 < L1 { c() { return "L2.c"; } }
+var x = L2();
+print x.a(); // expect: L0.a
+print x.b(); // expect: L1.b
+print x.c(); // expect: L2.c
+
+// Adding to the superclass after inheriting does not affect the subclass; this
+// matches clox, whose OP_INHERIT copies the table.
+print L1().a(); // expect: L0.a

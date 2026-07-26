@@ -1,0 +1,16 @@
+// `and`/`or` yield an operand, not a bool, and short-circuit.
+print 1 and 2;              // expect: 2
+print nil and 2;            // expect: nil
+print false and 2;          // expect: false
+print 1 or 2;               // expect: 1
+print nil or "fallback";    // expect: fallback
+print false or nil;         // expect: nil
+print 1 and 2 and 3;        // expect: 3
+print nil or false or "x";  // expect: x
+print (1 and nil) or "y";   // expect: y
+
+fun boom() { print "evaluated"; return true; }
+var skipped = false and boom();
+print skipped;              // expect: false
+var also = true or boom();
+print also;                 // expect: true

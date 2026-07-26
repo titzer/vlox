@@ -1,0 +1,359 @@
+// Copyright 2026 Ben L. Titzer. All rights reserved.
+// See LICENSE for details of Apache 2.0 license.
+
+// Lowers the resolved AST to Wasm bytecode, one function body at a time.
+//
+// Every Lox statement is stack-neutral and every Lox expression leaves exactly one
+// {lox} value, so the emitted code is well-typed Wasm by construction: no
+// backpatching, no jump-offset arithmetic, no scope-exit pops.
+class Compiler(module: Module, reporter: Reporter) {
+	private var buf: CodeBuffer;
+	private var decl: FuncDecl;
+	private var scratch: int;	// next free scratch local slot
+
+	// Compile every function the resolver registered. Nested functions are emitted
+	// as separate bodies; the enclosing body only builds the closure.
+	def compileModule() {
+		for (i < module.funcs.length) compileFunc(module.funcs[i]);
+	}
+	private def compileFunc(f: FuncDecl) {
+		decl = f;
+		buf = CodeBuffer.new();
+		scratch = f.numLocals;
+		buf.at(f.span);
+		emitPrologue(f);
+		for (s in f.body) stmt(s);
+		emitEpilogue(f);
+		f.code = buf.extract();
+		f.positions = buf.extractPositions();
+	}
+	// A parameter (or receiver) that some inner function captures arrives in a plain
+	// Wasm local and must be moved into a cell before anything can capture it.
+	private def emitPrologue(f: FuncDecl) {
+		if (f.selfRef != null && f.selfRef.boxed) box(0);
+		for (i < f.paramRefs.length) {
+			if (f.paramRefs[i].boxed) box(i + 1);
+		}
+	}
+	private def box(slot: int) {
+		buf.op1(Wasm.LOCAL_GET, slot);
+		buf.intrinsic(Wasm.CELL_NEW);
+		buf.op1(Wasm.LOCAL_SET, slot);
+	}
+	// Falling off the end of a Lox function yields nil; falling off the end of an
+	// initializer yields the receiver.
+	private def emitEpilogue(f: FuncDecl) {
+		if (f.kind == FuncKind.INITIALIZER) loadRef(f.selfRef);
+		else pushConst(Value.Nil);
+		buf.op(Wasm.END);
+		if (scratch > f.numLocals) f.numLocals = scratch;
+	}
+
+	// ---- statements --------------------------------------------------------------
+
+	private def stmt(s: Stmt) {
+		buf.at(s.span);
+		match (s) {
+			x: ExprStmt => {
+				expr(x.expr);
+				buf.op(Wasm.DROP);
+			}
+			x: PrintStmt => {
+				expr(x.expr);
+				buf.at(x.span).intrinsic(Wasm.PRINT);
+			}
+			x: VarStmt => {
+				var boxed = beginDeclare(x.ref);
+				if (x.init != null) expr(x.init);
+				else pushConst(Value.Nil);
+				buf.at(x.span);
+				endDeclare(x.ref, boxed);
+			}
+			x: BlockStmt => for (t in x.stmts) stmt(t);
+			x: IfStmt => {
+				expr(x.cond);
+				buf.at(x.span).intrinsic(Wasm.TRUTHY);
+				buf.op1(Wasm.IF, Wasm.BT_VOID);
+				stmt(x.thenArm);
+				if (x.elseArm != null) {
+					buf.op(Wasm.ELSE);
+					stmt(x.elseArm);
+				}
+				buf.op(Wasm.END);
+			}
+			x: WhileStmt => {
+				buf.op1(Wasm.BLOCK, Wasm.BT_VOID);
+				buf.op1(Wasm.LOOP, Wasm.BT_VOID);
+				expr(x.cond);
+				buf.at(x.span).intrinsic(Wasm.TRUTHY);
+				buf.op(Wasm.I32_EQZ);
+				buf.op1(Wasm.BR_IF, 1);		// exit the block
+				stmt(x.body);
+				buf.op1(Wasm.BR, 0);		// back to the loop head
+				buf.op(Wasm.END);
+				buf.op(Wasm.END);
+			}
+			x: ForStmt => {
+				if (x.init != null) stmt(x.init);
+				buf.op1(Wasm.BLOCK, Wasm.BT_VOID);
+				buf.op1(Wasm.LOOP, Wasm.BT_VOID);
+				if (x.cond != null) {
+					expr(x.cond);
+					buf.at(x.span).intrinsic(Wasm.TRUTHY);
+					buf.op(Wasm.I32_EQZ);
+					buf.op1(Wasm.BR_IF, 1);
+				}
+				stmt(x.body);
+				if (x.incr != null) {
+					expr(x.incr);
+					buf.op(Wasm.DROP);
+				}
+				buf.op1(Wasm.BR, 0);
+				buf.op(Wasm.END);
+				buf.op(Wasm.END);
+			}
+			x: ReturnStmt => {
+				if (x.value != null) expr(x.value);
+				else if (decl.kind == FuncKind.INITIALIZER) loadRef(decl.selfRef);
+				else pushConst(Value.Nil);
+				buf.at(x.span).op(Wasm.RETURN);
+			}
+			x: FunStmt => {
+				// The cell is created first, so a closure that captures the
+				// function's own name can see it and recurse.
+				var boxed = beginDeclare(x.ref);
+				closure(x.func);
+				buf.at(x.span);
+				endDeclare(x.ref, boxed);
+			}
+			x: ClassStmt => classStmt(x);
+			_ => ;
+		}
+	}
+	private def classStmt(x: ClassStmt) {
+		// Likewise, a method that refers to its own class by name captures the
+		// cell, which therefore has to exist before the methods are built.
+		var boxed = beginDeclare(x.ref);
+		buf.intrinsic1(Wasm.CLASS, module.nameFor(x.name.text));
+		if (x.superclass != null) {
+			// {inherit} needs the superclass on top of the class, but the hidden
+			// `super` binding needs it too, so stash it in a scratch local.
+			var tmp = allocScratch();
+			expr(x.superclass);
+			buf.at(x.span).op1(Wasm.LOCAL_TEE, tmp);
+			buf.intrinsic(Wasm.INHERIT);
+			var superBoxed = beginDeclare(x.superRef);
+			buf.op1(Wasm.LOCAL_GET, tmp);
+			endDeclare(x.superRef, superBoxed);
+			freeScratch();
+		}
+		for (m in x.methods) {
+			closure(m);
+			buf.at(m.span).intrinsic1(Wasm.METHOD, module.nameFor(m.name));
+		}
+		buf.at(x.span);
+		endDeclare(x.ref, boxed);
+	}
+	// Build a closure over {f}: push each captured cell, then the function index and
+	// the capture count.
+	private def closure(f: FuncDecl) {
+		for (i < f.captures.length) {
+			match (f.captures[i]) {
+				FromLocal(slot) => buf.op1(Wasm.LOCAL_GET, slot);
+				FromUpvalue(index) => buf.intrinsic1(Wasm.UPVALUE, index);
+			}
+		}
+		buf.i32const(f.index);
+		buf.intrinsic1(Wasm.CLOSURE, f.captures.length);
+	}
+
+	// ---- expressions -------------------------------------------------------------
+
+	private def expr(e: Expr) {
+		buf.at(e.span);
+		match (e) {
+			x: LiteralExpr => pushConst(x.value);
+			x: StringExpr => buf.op1(Wasm.GLOBAL_GET, module.stringConstant(x.token.str));
+			x: VarExpr => loadRef(x.ref);
+			x: ThisExpr => loadRef(x.ref);
+			x: AssignExpr => assign(x.ref, x.value, x.span);
+			x: UnaryExpr => {
+				expr(x.operand);
+				buf.at(x.span).intrinsic(if(x.op.kind == Tok.BANG, Wasm.NOT, Wasm.NEG));
+			}
+			x: BinaryExpr => {
+				expr(x.left);
+				expr(x.right);
+				buf.at(x.span).intrinsic(binaryIntrinsic(x.op.kind));
+			}
+			x: LogicalExpr => logical(x);
+			x: CallExpr => call(x);
+			x: GetExpr => {
+				expr(x.obj);
+				buf.at(x.span).intrinsic1(Wasm.GET_FIELD, module.nameFor(x.name.text));
+			}
+			x: SetExpr => {
+				expr(x.obj);
+				expr(x.value);
+				buf.at(x.span).intrinsic1(Wasm.SET_FIELD, module.nameFor(x.name.text));
+			}
+			x: SuperExpr => {
+				// A bare `super.m` that is not immediately called produces a
+				// bound method.
+				loadRef(x.thisRef);
+				loadRef(x.superRef);
+				buf.at(x.span).intrinsic1(Wasm.GET_SUPER, module.nameFor(x.method.text));
+			}
+			_ => pushConst(Value.Nil);
+		}
+	}
+	// `a and b` / `a or b` keep the left operand in a scratch local so that the
+	// short-circuit arm can yield it; the whole thing is one Wasm `if` producing a
+	// {lox} result.
+	private def logical(x: LogicalExpr) {
+		var tmp = allocScratch();
+		expr(x.left);
+		buf.at(x.span).op1(Wasm.LOCAL_TEE, tmp);
+		buf.intrinsic(Wasm.TRUTHY);
+		buf.op1(Wasm.IF, Wasm.VT_LOX);
+		if (x.op.kind == Tok.AND) {
+			expr(x.right);
+			buf.op(Wasm.ELSE);
+			buf.op1(Wasm.LOCAL_GET, tmp);
+		} else {
+			buf.op1(Wasm.LOCAL_GET, tmp);
+			buf.op(Wasm.ELSE);
+			expr(x.right);
+		}
+		buf.op(Wasm.END);
+		freeScratch();
+	}
+	// Calls whose callee is a property access are fused, so that reading the method
+	// never allocates a bound-method object.
+	private def call(x: CallExpr) {
+		if (GetExpr.?(x.callee)) {
+			var g = GetExpr.!(x.callee);
+			expr(g.obj);
+			for (a in x.args) expr(a);
+			buf.at(x.span).i32const(module.nameFor(g.name.text));
+			buf.intrinsic1(Wasm.INVOKE, x.args.length);
+			return;
+		}
+		if (SuperExpr.?(x.callee)) {
+			var s = SuperExpr.!(x.callee);
+			loadRef(s.thisRef);
+			for (a in x.args) expr(a);
+			loadRef(s.superRef);
+			buf.at(x.span).i32const(module.nameFor(s.method.text));
+			buf.intrinsic1(Wasm.INVOKE_SUPER, x.args.length);
+			return;
+		}
+		expr(x.callee);
+		for (a in x.args) expr(a);
+		buf.at(x.span).intrinsic1(Wasm.CALL_VALUE, x.args.length);
+	}
+
+	// ---- variable access ---------------------------------------------------------
+
+	private def loadRef(ref: VarRef) {
+		match (ref.kind) {
+			GLOBAL => {
+				buf.op1(Wasm.GLOBAL_GET, ref.index);
+				buf.intrinsic1(Wasm.CHECK_GLOBAL, ref.index);
+			}
+			LOCAL => {
+				buf.op1(Wasm.LOCAL_GET, ref.index);
+				if (ref.boxed) buf.intrinsic(Wasm.CELL_GET);
+			}
+			UPVALUE => {
+				buf.intrinsic1(Wasm.UPVALUE, ref.index);
+				buf.intrinsic(Wasm.CELL_GET);
+			}
+		}
+	}
+	// A declaration of a captured local installs a *fresh, empty* cell before the
+	// initializer is evaluated, and fills it in afterwards. Doing it in that order
+	// is what lets `fun f() { ... f() ... }` and `class C { m() { return C; } }`
+	// capture themselves: the closure created by the initializer must find a cell
+	// already sitting in the slot. Creating a fresh cell per execution also gives a
+	// `var` in a loop body one binding per iteration, which Lox requires.
+	//
+	// Returns whether the caller must finish with the boxed form of {endDeclare}.
+	private def beginDeclare(ref: VarRef) -> bool {
+		if (ref.kind != VarKind.LOCAL || !ref.boxed) return false;
+		pushConst(Value.Nil);
+		buf.intrinsic(Wasm.CELL_NEW);
+		buf.op1(Wasm.LOCAL_SET, ref.index);
+		buf.op1(Wasm.LOCAL_GET, ref.index);
+		return true;
+	}
+	private def endDeclare(ref: VarRef, boxed: bool) {
+		if (boxed) {
+			buf.intrinsic(Wasm.CELL_SET);
+			buf.op(Wasm.DROP);
+			return;
+		}
+		storeRef(ref);
+	}
+	// Store the value on the stack into {ref}, consuming it. Used for declarations
+	// of unboxed storage, which cannot fail; assignment goes through {assign}.
+	private def storeRef(ref: VarRef) {
+		match (ref.kind) {
+			GLOBAL => buf.op1(Wasm.GLOBAL_SET, ref.index);
+			LOCAL => buf.op1(Wasm.LOCAL_SET, ref.index);
+			UPVALUE => buf.op(Wasm.DROP);	// a declaration never targets an upvalue
+		}
+	}
+	// Assignment is an expression, so every form leaves the assigned value behind.
+	private def assign(ref: VarRef, value: Expr, span: Span) {
+		match (ref.kind) {
+			GLOBAL => {
+				expr(value);
+				buf.at(span).intrinsic1(Wasm.SET_GLOBAL, ref.index);
+			}
+			LOCAL => {
+				if (ref.boxed) {
+					buf.op1(Wasm.LOCAL_GET, ref.index);
+					expr(value);
+					buf.at(span).intrinsic(Wasm.CELL_SET);
+				} else {
+					expr(value);
+					buf.at(span).op1(Wasm.LOCAL_TEE, ref.index);
+				}
+			}
+			UPVALUE => {
+				buf.intrinsic1(Wasm.UPVALUE, ref.index);
+				expr(value);
+				buf.at(span).intrinsic(Wasm.CELL_SET);
+			}
+		}
+	}
+	private def pushConst(v: Value) {
+		buf.op1(Wasm.GLOBAL_GET, module.constant(v));
+	}
+	private def binaryIntrinsic(kind: Tok) -> int {
+		match (kind) {
+			PLUS => return Wasm.ADD;
+			MINUS => return Wasm.SUB;
+			STAR => return Wasm.MUL;
+			SLASH => return Wasm.DIV;
+			EQUAL_EQUAL => return Wasm.EQ;
+			BANG_EQUAL => return Wasm.NE;
+			LESS => return Wasm.LT;
+			LESS_EQUAL => return Wasm.LE;
+			GREATER => return Wasm.GT;
+			GREATER_EQUAL => return Wasm.GE;
+			_ => return Wasm.ADD;
+		}
+	}
+	// Scratch locals follow a stack discipline, so slots are reused across sibling
+	// expressions but never across nested ones.
+	private def allocScratch() -> int {
+		var slot = scratch++;
+		if (scratch > decl.numLocals) decl.numLocals = scratch;
+		return slot;
+	}
+	private def freeScratch() {
+		scratch--;
+	}
+}

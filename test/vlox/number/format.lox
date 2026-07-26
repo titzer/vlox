@@ -1,0 +1,19 @@
+// Lox prints numbers with C's "%g": six significant digits, trailing zeros
+// stripped, scientific notation outside [1e-4, 1e6).
+print 0;            // expect: 0
+print -0;           // expect: -0
+print 1;            // expect: 1
+print 100;          // expect: 100
+print 999999;       // expect: 999999
+print 1000000;      // expect: 1e+06
+print 12345678;     // expect: 1.23457e+07
+print 0.5;          // expect: 0.5
+print 0.125;        // expect: 0.125
+print 0.0001;       // expect: 0.0001
+print 0.00001;      // expect: 1e-05
+print 1 / 3;        // expect: 0.333333
+print 2 / 3;        // expect: 0.666667
+print 10 / 4;       // expect: 2.5
+print 1.5 + 1.5;    // expect: 3
+print 123.456;      // expect: 123.456
+print -0.001;       // expect: -0.001

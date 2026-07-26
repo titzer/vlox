@@ -1,0 +1,5 @@
+// A function may name a global that is defined later; the check happens at the
+// read, not at compile time.
+fun useLater() { return later; }
+var later = "defined now";
+print useLater(); // expect: defined now

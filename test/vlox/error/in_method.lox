@@ -1,0 +1,6 @@
+class Broken {
+  go() {
+    return this.missing(); // expect runtime error: Undefined property 'missing'.
+  }
+}
+Broken().go();

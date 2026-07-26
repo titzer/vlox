@@ -1,0 +1,151 @@
+// Copyright 2026 Ben L. Titzer. All rights reserved.
+// See LICENSE for details of Apache 2.0 license.
+
+// WebAssembly opcodes and encoding. See DESIGN.md for why Vlox emits real Wasm
+// bytes rather than a private opcode space.
+component Wasm {
+	// ---- opcodes (subset actually emitted) ---------------------------------------
+	def UNREACHABLE: byte = 0x00;
+	def NOP: byte        = 0x01;
+	def BLOCK: byte      = 0x02;
+	def LOOP: byte       = 0x03;
+	def IF: byte         = 0x04;
+	def ELSE: byte       = 0x05;
+	def END: byte        = 0x0B;
+	def BR: byte         = 0x0C;
+	def BR_IF: byte      = 0x0D;
+	def RETURN: byte     = 0x0F;
+	def CALL: byte       = 0x10;
+	def DROP: byte       = 0x1A;
+	def LOCAL_GET: byte  = 0x20;
+	def LOCAL_SET: byte  = 0x21;
+	def LOCAL_TEE: byte  = 0x22;
+	def GLOBAL_GET: byte = 0x23;
+	def GLOBAL_SET: byte = 0x24;
+	def I32_CONST: byte  = 0x41;
+	def I32_EQZ: byte    = 0x45;
+
+	// ---- value types / block types -----------------------------------------------
+	def VT_LOX: byte   = 0x6F;	// externref today; a concrete GC struct type later
+	def VT_I32: byte   = 0x7F;
+	def BT_VOID: byte  = 0x40;	// empty block type
+
+	// ---- intrinsics --------------------------------------------------------------
+	// Function indices below NUM_INTRINSICS. In a real module these are imports.
+	def TRUTHY        = 0;
+	def NOT           = 1;
+	def NEG           = 2;
+	def ADD           = 3;
+	def SUB           = 4;
+	def MUL           = 5;
+	def DIV           = 6;
+	def EQ            = 7;
+	def NE            = 8;
+	def LT            = 9;
+	def LE            = 10;
+	def GT            = 11;
+	def GE            = 12;
+	def PRINT         = 13;
+	def CALL_VALUE    = 14;
+	def CHECK_GLOBAL  = 15;
+	def SET_GLOBAL    = 16;
+	def CELL_NEW      = 17;
+	def CELL_GET      = 18;
+	def CELL_SET      = 19;
+	def UPVALUE       = 20;
+	def CLOSURE       = 21;
+	def GET_FIELD     = 22;
+	def SET_FIELD     = 23;
+	def INVOKE        = 24;
+	def CLASS         = 25;
+	def INHERIT       = 26;
+	def METHOD        = 27;
+	def GET_SUPER     = 28;
+	def INVOKE_SUPER  = 29;
+	def NUM_INTRINSICS = 30;
+
+	def INTRINSIC_NAMES = [
+		"lox.truthy", "lox.not", "lox.neg", "lox.add", "lox.sub", "lox.mul",
+		"lox.div", "lox.eq", "lox.ne", "lox.lt", "lox.le", "lox.gt", "lox.ge",
+		"lox.print", "lox.call", "lox.check_global", "lox.set_global",
+		"lox.cell_new", "lox.cell_get", "lox.cell_set", "lox.upvalue",
+		"lox.closure", "lox.get_field", "lox.set_field", "lox.invoke",
+		"lox.class", "lox.inherit", "lox.method", "lox.get_super",
+		"lox.invoke_super"
+	];
+
+	def intrinsicName(idx: int) -> string {
+		if (idx >= 0 && idx < NUM_INTRINSICS) return INTRINSIC_NAMES[idx];
+		return "?";
+	}
+}
+
+// A growable buffer of Wasm code, with a parallel (offset, line, column) table.
+// Runtime stack traces need the line; disassembly listings show the column too.
+class CodeBuffer {
+	def bytes = Vector<byte>.new();
+	private def positions = Vector<int>.new();
+	private var lastLine = -1;
+	private var lastColumn = -1;
+
+	// Record that everything emitted from here on comes from {span}.
+	def at(span: Span) -> this {
+		if (span.beginLine != lastLine || span.beginColumn != lastColumn) {
+			positions.put(bytes.length);
+			positions.put(span.beginLine);
+			positions.put(span.beginColumn);
+			lastLine = span.beginLine;
+			lastColumn = span.beginColumn;
+		}
+	}
+	def op(b: byte) -> this {
+		bytes.put(b);
+	}
+	def op1(b: byte, imm: int) -> this {
+		bytes.put(b);
+		uleb(imm);
+	}
+	// Unsigned LEB128, the Wasm encoding for every index immediate.
+	def uleb(val: int) -> this {
+		var v = u32.view(val);
+		while (true) {
+			var b = byte.!(v & 0x7Fu);
+			v = v >> 7;
+			if (v == 0) { bytes.put(b); return; }
+			bytes.put(byte.!(b | 0x80));
+		}
+	}
+	// Signed LEB128, the Wasm encoding for i32.const.
+	def sleb(val: int) -> this {
+		var v = val;
+		while (true) {
+			var b = byte.!(v & 0x7F);
+			v = v >> 7;
+			var signBit = (b & 0x40) != 0;
+			if ((v == 0 && !signBit) || (v == -1 && signBit)) {
+				bytes.put(b);
+				return;
+			}
+			bytes.put(byte.!(b | 0x80));
+		}
+	}
+	def i32const(val: int) -> this {
+		bytes.put(Wasm.I32_CONST);
+		sleb(val);
+	}
+	// A call to a runtime intrinsic; indistinguishable from any other Wasm call.
+	def intrinsic(idx: int) -> this {
+		op1(Wasm.CALL, idx);
+	}
+	// Push an i32 immediate, then invoke the intrinsic that consumes it.
+	def intrinsic1(idx: int, imm: int) -> this {
+		i32const(imm);
+		op1(Wasm.CALL, idx);
+	}
+	def extract() -> Array<byte> {
+		return bytes.extract();
+	}
+	def extractPositions() -> Array<int> {
+		return positions.extract();
+	}
+}

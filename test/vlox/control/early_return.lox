@@ -1,0 +1,29 @@
+fun findFirst(limit) {
+  for (var i = 0; i < limit; i = i + 1) {
+    if (i * i > 20) return i;
+  }
+  return -1;
+}
+print findFirst(100); // expect: 5
+print findFirst(3);   // expect: -1
+
+fun inWhile() {
+  var i = 0;
+  while (true) {
+    i = i + 1;
+    if (i == 7) return i;
+  }
+}
+print inWhile();      // expect: 7
+
+// Returning out of two enclosing structured blocks at once.
+fun deepReturn() {
+  for (var i = 0; i < 5; i = i + 1) {
+    while (true) {
+      if (i == 2) return "out of both";
+      i = i + 1;
+    }
+  }
+  return "fell through";
+}
+print deepReturn();   // expect: out of both

@@ -1,0 +1,13 @@
+# Tests from the reference suite that do not apply to Vlox.
+# Format:  <path relative to this directory>: <reason>
+#
+# Vlox's bytecode is WebAssembly, so none of clox's chunk-format limits exist:
+# the constant pool is module-wide with LEB128 indices, locals and upvalues are
+# LEB128 indices, and structured control flow needs no jump offsets at all.
+# See DESIGN.md section 9. The two limits that are part of the *language*
+# (255 parameters, 255 arguments) are enforced and those tests do run.
+limit/loop_too_large.lox:      no 16-bit jump offsets; br targets a structured label
+limit/no_reuse_constants.lox:  one module-wide constant pool, not one per function
+limit/too_many_constants.lox:  constant indices are LEB128, not one byte
+limit/too_many_locals.lox:     local indices are LEB128, not one byte
+limit/too_many_upvalues.lox:   upvalue indices are LEB128, not one byte

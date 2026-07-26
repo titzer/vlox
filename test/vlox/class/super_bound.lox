@@ -1,0 +1,12 @@
+// `super.m` without a call yields a bound method carrying the *original* receiver.
+class Base {
+  greet() { return "base " + this.name; }
+}
+class Derived < Base {
+  init(name) { this.name = name; }
+  bound() { return super.greet; }
+  greet() { return "derived"; }
+}
+var d = Derived("x");
+print d.greet();      // expect: derived
+print d.bound()();    // expect: base x

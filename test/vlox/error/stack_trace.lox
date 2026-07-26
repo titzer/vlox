@@ -1,0 +1,6 @@
+// The stack trace lists frames innermost-first, naming each function and the line
+// of the instruction that was executing in it.
+fun a() { b(); }
+fun b() { c(); }
+fun c() { undefinedThing; } // expect runtime error: Undefined variable 'undefinedThing'.
+a();

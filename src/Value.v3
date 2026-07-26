@@ -1,0 +1,180 @@
+// Copyright 2026 Ben L. Titzer. All rights reserved.
+// See LICENSE for details of Apache 2.0 license.
+
+// A Lox value. In a real WebAssembly module this is the single value type {lox};
+// here it is a Virgil variant, unboxed so that a number does not cost a heap
+// allocation per arithmetic result. {Undef} is the sentinel stored in a mutable
+// global that has not been assigned yet; it is never observable by a Lox program
+// because every read of a Lox global is guarded by the {check_global} intrinsic.
+type Value #unboxed {
+	case Undef;
+	case Nil;
+	case Bool(v: bool);
+	case Num(v: double);
+	case Ref(obj: Obj);
+}
+
+def TRUE = Value.Bool(true);
+def FALSE = Value.Bool(false);
+
+component Values {
+	def NIL = Value.Nil;
+
+	def box(b: bool) -> Value {
+		return if(b, TRUE, FALSE);
+	}
+	// Lox truthiness: only {nil} and {false} are falsey.
+	def truthy(v: Value) -> bool {
+		match (v) {
+			Nil => return false;
+			Bool(b) => return b;
+			_ => return true;
+		}
+	}
+	// Lox equality. Values of different types are never equal, numbers follow IEEE
+	// (so NaN != NaN), and strings compare by contents (they are interned, so
+	// reference equality suffices).
+	def equal(a: Value, b: Value) -> bool {
+		match (a) {
+			Undef => return Value.Undef.?(b);
+			Nil => return Value.Nil.?(b);
+			Bool(x) => match (b) {
+				Bool(y) => return x == y;
+				_ => return false;
+			}
+			Num(x) => match (b) {
+				Num(y) => return x == y;
+				_ => return false;
+			}
+			Ref(x) => match (b) {
+				Ref(y) => return x == y;
+				_ => return false;
+			}
+		}
+	}
+	// Render {v} the way Lox's {print} does.
+	def render(buf: StringBuilder, v: Value) -> StringBuilder {
+		match (v) {
+			Undef => return buf.puts("<undefined>");
+			Nil => return buf.puts("nil");
+			Bool(b) => return buf.puts(if(b, "true", "false"));
+			Num(d) => return Numbers.render(buf, d);
+			Ref(o) => return o.render(buf);
+		}
+	}
+	def isString(v: Value) -> bool {
+		match (v) {
+			Ref(o) => return LoxString.?(o);
+			_ => return false;
+		}
+	}
+}
+
+// Base class of every heap-allocated Lox object.
+class Obj {
+	def render(buf: StringBuilder) -> StringBuilder;
+}
+
+// An interned Lox string. Allocate via {StringPool.intern} so that equality and
+// property lookup are pointer comparisons against a precomputed hash, rather than
+// a walk over the characters.
+class LoxString extends Obj {
+	def str: string;
+	def hash: int;
+	new(str, hash) { }
+	def render(buf: StringBuilder) -> StringBuilder {
+		return buf.puts(str);
+	}
+}
+
+// Maps keyed by interned strings. Because interning guarantees one object per
+// distinct contents, hashing is a field read and comparison is a pointer compare.
+component LoxStrings {
+	def newMap<V>() -> HashMap<LoxString, V> {
+		return HashMap<LoxString, V>.new(hash, equal);
+	}
+	def hash(s: LoxString) -> int { return s.hash; }
+	def equal(a: LoxString, b: LoxString) -> bool { return a == b; }
+}
+
+// A boxed local variable. Locals that some inner function captures are stored in a
+// cell, so that the closure and the enclosing frame share one mutable location.
+class LoxCell extends Obj {
+	var value: Value;
+	new(value) { }
+	def render(buf: StringBuilder) -> StringBuilder {
+		return buf.puts("<cell>");	// never reachable from Lox code
+	}
+}
+
+// A closure: a compiled function plus the cells it captured.
+class LoxClosure extends Obj {
+	def func: FuncDecl;
+	def cells: Array<LoxCell>;
+	new(func, cells) { }
+	def render(buf: StringBuilder) -> StringBuilder {
+		if (func.kind == FuncKind.SCRIPT) return buf.puts("<script>");
+		return buf.put1("<fn %s>", func.name);
+	}
+}
+
+// A builtin implemented in Virgil, e.g. {clock}.
+class LoxNative extends Obj {
+	def name: string;
+	def arity: int;
+	def invoke: Array<Value> -> Value;
+	new(name, arity, invoke) { }
+	def render(buf: StringBuilder) -> StringBuilder {
+		return buf.puts("<native fn>");
+	}
+}
+
+class LoxClass extends Obj {
+	def name: LoxString;
+	var superclass: LoxClass;
+	def methods = LoxStrings.newMap<LoxClosure>();
+	new(name) { }
+	def render(buf: StringBuilder) -> StringBuilder {
+		return buf.puts(name.str);
+	}
+	// Methods are copied down from the superclass at {inherit} time, so lookup is a
+	// single hash probe with no chain walk.
+	def findMethod(name: LoxString) -> LoxClosure {
+		return methods[name];
+	}
+}
+
+// An instance. A missing field reads back as {Value.Undef}, the default value of the
+// variant, which is how absence is detected without a second hash probe.
+class LoxInstance extends Obj {
+	def cls: LoxClass;
+	def fields = LoxStrings.newMap<Value>();
+	new(cls) { }
+	def render(buf: StringBuilder) -> StringBuilder {
+		return buf.put1("%s instance", cls.name.str);
+	}
+}
+
+// A method closure with its receiver already bound, produced by reading a method
+// off an instance (or off {super}) without immediately calling it.
+class LoxBoundMethod extends Obj {
+	def receiver: Value;
+	def method: LoxClosure;
+	new(receiver, method) { }
+	def render(buf: StringBuilder) -> StringBuilder {
+		return buf.put1("<fn %s>", method.func.name);
+	}
+}
+
+// Interning table for Lox strings.
+class StringPool {
+	private def map = Strings.newMap<LoxString>();
+
+	def intern(str: string) -> LoxString {
+		var s = map[str];
+		if (s != null) return s;
+		s = LoxString.new(str, Strings.hash(str));
+		map[str] = s;
+		return s;
+	}
+}
