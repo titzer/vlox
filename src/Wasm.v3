@@ -78,7 +78,11 @@ component Wasm {
 		if (idx >= 0 && idx < NUM_INTRINSICS) return INTRINSIC_NAMES[idx];
 		return "?";
 	}
-
+	// Read an index immediate: a labelidx, localidx, globalidx or funcidx, all of
+	// which are unsigned LEB128 and fit in an int.
+	def readIndex(d: DataReader) -> int {
+		return int.!(d.read_uleb32());
+	}
 }
 
 // A growable buffer of Wasm code. {DataWriter} supplies the storage and the LEB128

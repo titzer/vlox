@@ -115,7 +115,7 @@ class Disassembler(module: Module) {
 	}
 	// Render "<name> <index>" and return the index.
 	private def imm(buf: StringBuilder, d: DataReader, name: string) -> int {
-		var v = int.!(d.read_uleb32());
+		var v = Wasm.readIndex(d);
 		buf.put2("%s %d", name, v);
 		return v;
 	}

@@ -145,9 +145,9 @@ class Interpreter(module: Module) {
 						}
 						labelTop--;
 					}
-					Wasm.BR => d.at(branch(uleb(d)));
+					Wasm.BR => d.at(branch(Wasm.readIndex(d)));
 					Wasm.BR_IF => {
-						var depth = uleb(d);
+						var depth = Wasm.readIndex(d);
 						if (ipop() != 0) d.at(branch(depth));
 					}
 					Wasm.RETURN => {
@@ -156,15 +156,15 @@ class Interpreter(module: Module) {
 						break;
 					}
 					Wasm.DROP => vsp--;
-					Wasm.LOCAL_GET => push(stack[f.base + uleb(d)]);
-					Wasm.LOCAL_SET => stack[f.base + uleb(d)] = stack[--vsp];
-					Wasm.LOCAL_TEE => stack[f.base + uleb(d)] = stack[vsp - 1];
-					Wasm.GLOBAL_GET => push(globals[uleb(d)]);
-					Wasm.GLOBAL_SET => globals[uleb(d)] = stack[--vsp];
+					Wasm.LOCAL_GET => push(stack[f.base + Wasm.readIndex(d)]);
+					Wasm.LOCAL_SET => stack[f.base + Wasm.readIndex(d)] = stack[--vsp];
+					Wasm.LOCAL_TEE => stack[f.base + Wasm.readIndex(d)] = stack[vsp - 1];
+					Wasm.GLOBAL_GET => push(globals[Wasm.readIndex(d)]);
+					Wasm.GLOBAL_SET => globals[Wasm.readIndex(d)] = stack[--vsp];
 					Wasm.I32_CONST => ipush(d.read_sleb32());
 					Wasm.I32_EQZ => istack[isp - 1] = if(istack[isp - 1] == 0, 1, 0);
 					Wasm.CALL => {
-						var idx = uleb(d);
+						var idx = Wasm.readIndex(d);
 						// Only intrinsics are reached by a direct call; Lox
 						// calls are dynamic and go through `lox.call`.
 						if (idx >= Wasm.NUM_INTRINSICS) {
@@ -185,10 +185,6 @@ class Interpreter(module: Module) {
 				}
 			}
 		}
-	}
-	// Every Wasm index immediate is an unsigned LEB128 and fits in an int.
-	private def uleb(d: DataReader) -> int {
-		return int.!(d.read_uleb32());
 	}
 	private def pushLabel(target: int, blockType: byte, isLoop: bool) {
 		if (++labelTop >= labels.length) growLabels();
