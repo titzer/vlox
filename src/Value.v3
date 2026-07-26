@@ -1,19 +1,8 @@
 // Copyright 2026 Ben L. Titzer. All rights reserved.
 // See LICENSE for details of Apache 2.0 license.
 
-// A Lox value. In a real WebAssembly module this is the single value type {lox};
-// here it is a Virgil variant, unboxed so that a number does not cost a heap
-// allocation per arithmetic result. {Undef} is the sentinel stored in a mutable
-// global that has not been assigned yet; it is never observable by a Lox program
-// because every read of a Lox global is guarded by the {check_global} intrinsic.
-//
-// Virgil's structural equality on this variant *is* Lox's `==`, so the interpreter
-// compares values with a plain `==` and there is no Values.equal. Cases with
-// different tags are unequal; {Num} compares with double.==, which is what Lox
-// wants (NaN != NaN, 0.0 == -0.0); and {Ref} compares by reference, which is also
-// what Lox wants, because strings are interned and so reference equality on them
-// is equality by contents. test/vlox/number/equality.lox pins all of that down.
-type Value #unboxed {
+// A Lox value.
+type Value #unboxed { // XXX: consider NaN-boxing
 	case Undef;
 	case Nil;
 	case Bool(v: bool);
@@ -21,10 +10,10 @@ type Value #unboxed {
 	case Ref(obj: LoxObject);
 }
 
-def TRUE = Value.Bool(true);
-def FALSE = Value.Bool(false);
 
 component Values {
+	def TRUE = Value.Bool(true);
+	def FALSE = Value.Bool(false);
 	def NIL = Value.Nil;
 
 	def box(b: bool) -> Value {
@@ -61,9 +50,8 @@ class LoxObject {
 	def render(buf: StringBuilder) -> StringBuilder;
 }
 
-// An interned Lox string. Allocate via {StringPool.intern} so that equality and
-// property lookup are pointer comparisons against a precomputed hash, rather than
-// a walk over the characters.
+// A Lox string. Best allocated via {StringPool.intern} so that equality and
+// property lookup are pointer comparisons.
 class LoxString extends LoxObject {
 	def str: string;
 	def hash: int;
@@ -73,14 +61,11 @@ class LoxString extends LoxObject {
 	}
 }
 
-// Maps keyed by interned strings. Because interning guarantees one object per
-// distinct contents, hashing is a field read and comparison is a pointer compare.
+// Maps keyed by strings.
 component LoxStrings {
 	def newMap<V>() -> HashMap<LoxString, V> {
-		return HashMap<LoxString, V>.new(hash, equal);
+		return HashMap<LoxString, V>.new(LoxString.hash, LoxString.==);
 	}
-	def hash(s: LoxString) -> int { return s.hash; }
-	def equal(a: LoxString, b: LoxString) -> bool { return a == b; }
 }
 
 // A boxed local variable. Locals that some inner function captures are stored in a
@@ -115,6 +100,7 @@ class LoxNative extends LoxObject {
 	}
 }
 
+// A class is a value.
 class LoxClass extends LoxObject {
 	def name: LoxString;
 	var superclass: LoxClass;
