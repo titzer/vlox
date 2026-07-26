@@ -2,7 +2,7 @@
 // See LICENSE for details of Apache 2.0 license.
 
 // A Lox value.
-type Value #unboxed { // XXX: consider NaN-boxing
+type Value { // XXX: consider NaN-boxing
 	case Undef;
 	case Nil;
 	case Bool(v: bool);
@@ -18,6 +18,18 @@ component Values {
 
 	def box(b: bool) -> Value {
 		return if(b, TRUE, FALSE);
+	}
+	// Lox equality. {Num} needs an explicit arm: Lox numbers follow IEEE, where
+	// NaN != NaN and 0.0 == -0.0, and `==` on the variant does not give that here.
+	// test/vlox/number/equality.lox pins the whole contract down.
+	def equal(a: Value, b: Value) -> bool {
+		match (a) {
+			Num(x) => match (b) {
+				Num(y) => return x == y;
+				_ => return false;
+			}
+			_ => return a == b;
+		}
 	}
 	// Lox truthiness: only {nil} and {false} are falsey.
 	def truthy(v: Value) -> bool {

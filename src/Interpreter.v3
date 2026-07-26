@@ -4,17 +4,25 @@
 // The Vlox virtual machine: a Wasm interpreter with a Lox runtime bolted on as
 // intrinsics.
 //
-// Two value stacks, because the bytecode is genuinely two-typed. The {lox} stack
-// holds Lox values and, per Wasm, also holds every function's locals in the frame
-// slots below its operand area. The {i32} stack holds branch conditions and the
-// immediate operands of the high-level opcodes. Nothing is ever live on the i32
-// stack across a branch, so control transfers only have to truncate it.
+// One operand stack, as Wasm has. The module uses exactly two value types, so a
+// stack entry is a {Slot}: a {lox} value, or the {i32} that carries a branch
+// condition or an opcode's immediate operand. Per Wasm, a frame's locals live in
+// the same stack, in the slots below its operand area.
+
+// An entry of the operand stack.
+// XXX: {Slot} and {Value} both want to be #unboxed. Marking either of them so
+// currently miscompiles, in two ways: a Ref read back out of an Array<Slot> fails
+// its subclass type query, and `==` on a Value stops being structural. Boxing costs
+// roughly 25% here, so this is worth revisiting.
+type Slot {
+	case Val(v: Value);
+	case I32(v: int);
+}
 
 // Where a `br` goes and what it must leave behind.
 class Label {
 	var target: int;	// pc to resume at
-	var vheight: int;	// lox stack height on entry
-	var iheight: int;	// i32 stack height on entry
+	var height: int;	// operand stack height on entry
 	var arity: int;		// values the block leaves behind
 	var isLoop: bool;	// branching to a loop re-enters it
 }
@@ -24,11 +32,10 @@ class Frame {
 	var closure: LoxClosure;
 	var code: Array<byte>;	// cached from {func}, read on every instruction
 	var side: SideTable;	// cached likewise
-	var base: int;		// index of local 0 in the lox stack
+	var base: int;		// index of local 0 in the operand stack
 	var pc: int;		// resume point
 	var tracePc: int;	// instruction to blame in a stack trace
 	var labelBase: int;
-	var iBase: int;		// i32 stack height on entry
 }
 
 // Per-function control-flow map, computed once by scanning the code. A real Wasm
@@ -38,24 +45,22 @@ class SideTable(endPc: Array<int>, elsePc: Array<int>) { }
 def SIGN_BIT: u64 = 0x8000_0000_0000_0000;
 def FRAMES_MAX = 1024;
 def STACK_MAX = 1 << 16;
-def ISTACK_MAX = 1 << 10;
 
 class Interpreter(module: Module) {
-	private def stack = Array<Value>.new(STACK_MAX);
-	private def istack = Array<int>.new(ISTACK_MAX);
+	private def stack = Array<Slot>.new(STACK_MAX);
 	// Grown on demand: a frame's label depth is bounded by its static nesting, but
 	// the total is that times the recursion depth, which has no small bound.
 	private var labels = Array<Label>.new(256);
 	private def frames = Array<Frame>.new(FRAMES_MAX);
 	private def globals = Array<Value>.new(module.globals.length);
 	private def sideTables = Array<SideTable>.new(module.funcs.length);
-	private var vsp: int;
-	private var isp: int;
+	private var sp: int;
 	private var labelTop = -1;
 	private var frameTop = -1;
 	private var frame: Frame;
 	private var errorMsg: string;
 	private def reader = DataReader.new(Array<byte>.new(0));
+	private def NIL_SLOT = Slot.Val(Values.NIL);
 	private def startUs = System.ticksUs();
 
 	private def INIT = module.pool.intern("init");
@@ -68,8 +73,7 @@ class Interpreter(module: Module) {
 		initGlobals();
 		for (i < sideTables.length) sideTables[i] = buildSideTable(module.funcs[i].code);
 		var script = LoxClosure.new(module.funcs[0], []);
-		stack[0] = Value.Ref(script);
-		vsp = 1;
+		push(Value.Ref(script));
 		if (pushFrame(script, 0, 0)) execute();
 		else reportError();
 		Io.flush();
@@ -140,7 +144,7 @@ class Interpreter(module: Module) {
 						if (labelTop < f.labelBase) {
 							// End of the function body; its result is on top.
 							f.tracePc = opPc;
-							doReturn(stack[vsp - 1]);
+							doReturn(valAt(sp - 1));
 							break;
 						}
 						labelTop--;
@@ -152,17 +156,17 @@ class Interpreter(module: Module) {
 					}
 					Wasm.RETURN => {
 						f.tracePc = opPc;
-						doReturn(stack[vsp - 1]);
+						doReturn(valAt(sp - 1));
 						break;
 					}
-					Wasm.DROP => vsp--;
-					Wasm.LOCAL_GET => push(stack[f.base + Wasm.readIndex(d)]);
-					Wasm.LOCAL_SET => stack[f.base + Wasm.readIndex(d)] = stack[--vsp];
-					Wasm.LOCAL_TEE => stack[f.base + Wasm.readIndex(d)] = stack[vsp - 1];
+					Wasm.DROP => sp--;
+					Wasm.LOCAL_GET => stack[sp++] = stack[f.base + Wasm.readIndex(d)];
+					Wasm.LOCAL_SET => stack[f.base + Wasm.readIndex(d)] = stack[--sp];
+					Wasm.LOCAL_TEE => stack[f.base + Wasm.readIndex(d)] = stack[sp - 1];
 					Wasm.GLOBAL_GET => push(globals[Wasm.readIndex(d)]);
-					Wasm.GLOBAL_SET => globals[Wasm.readIndex(d)] = stack[--vsp];
+					Wasm.GLOBAL_SET => globals[Wasm.readIndex(d)] = valAt(--sp);
 					Wasm.I32_CONST => ipush(d.read_sleb32());
-					Wasm.I32_EQZ => istack[isp - 1] = if(istack[isp - 1] == 0, 1, 0);
+					Wasm.I32_EQZ => stack[sp - 1] = Slot.I32(if(i32At(sp - 1) == 0, 1, 0));
 					Wasm.CALL => {
 						var idx = Wasm.readIndex(d);
 						// Only intrinsics are reached by a direct call; Lox
@@ -190,8 +194,7 @@ class Interpreter(module: Module) {
 		if (++labelTop >= labels.length) growLabels();
 		var l = labels[labelTop];
 		l.target = target;
-		l.vheight = vsp;
-		l.iheight = isp;
+		l.height = sp;
 		l.arity = if(blockType == Wasm.BT_VOID || isLoop, 0, 1);
 		l.isLoop = isLoop;
 	}
@@ -205,15 +208,13 @@ class Interpreter(module: Module) {
 	private def branch(depth: int) -> int {
 		var idx = labelTop - depth;
 		var l = labels[idx];
-		if (l.arity == 1) stack[l.vheight] = stack[vsp - 1];
-		vsp = l.vheight + l.arity;
-		isp = l.iheight;
+		if (l.arity == 1) stack[l.height] = stack[sp - 1];
+		sp = l.height + l.arity;
 		labelTop = if(l.isLoop, idx, idx - 1);
 		return l.target;
 	}
 	private def doReturn(result: Value) {
-		vsp = frame.base;
-		isp = frame.iBase;
+		sp = frame.base;
 		labelTop = frame.labelBase - 1;
 		frameTop--;
 		if (frameTop < 0) { frame = null; return; }
@@ -238,31 +239,30 @@ class Interpreter(module: Module) {
 		frame.pc = 0;
 		frame.tracePc = 0;
 		frame.labelBase = labelTop + 1;
-		frame.iBase = isp;
-		for (i = argc + 1; i < f.numLocals; i++) stack[base + i] = Values.NIL;
-		vsp = base + f.numLocals;
+		for (i = argc + 1; i < f.numLocals; i++) stack[base + i] = NIL_SLOT;
+		sp = base + f.numLocals;
 		return true;
 	}
 	// The `lox.call` intrinsic: {argc} arguments sit above the callee.
 	private def callValue(argc: int) -> bool {
-		var base = vsp - argc - 1;
-		var callee = stack[base];
+		var base = sp - argc - 1;
+		var callee = valAt(base);
 		match (callee) {
 			Ref(o) => {
 				if (LoxClosure.?(o)) return callClosure(LoxClosure.!(o), base, argc);
 				if (LoxClass.?(o)) return construct(LoxClass.!(o), base, argc);
 				if (LoxBoundMethod.?(o)) {
 					var b = LoxBoundMethod.!(o);
-					stack[base] = b.receiver;
+					stack[base] = Slot.Val(b.receiver);
 					return callClosure(b.method, base, argc);
 				}
 				if (LoxNative.?(o)) {
 					var n = LoxNative.!(o);
 					if (argc != n.arity) return arityError(n.arity, argc);
 					var args = Array<Value>.new(argc);
-					for (i < argc) args[i] = stack[base + 1 + i];
+					for (i < argc) args[i] = valAt(base + 1 + i);
 					var r = n.invoke(args);
-					vsp = base;
+					sp = base;
 					push(r);
 					return true;
 				}
@@ -277,11 +277,11 @@ class Interpreter(module: Module) {
 	}
 	private def construct(cls: LoxClass, base: int, argc: int) -> bool {
 		var inst = LoxInstance.new(cls);
-		stack[base] = Value.Ref(inst);	// becomes the receiver in slot 0
+		stack[base] = Slot.Val(Value.Ref(inst));	// becomes the receiver in slot 0
 		var init = cls.findMethod(INIT);
 		if (init != null) return callClosure(init, base, argc);
 		if (argc != 0) return arityError(0, argc);
-		vsp = base;
+		sp = base;
 		push(Value.Ref(inst));
 		return true;
 	}
@@ -291,14 +291,14 @@ class Interpreter(module: Module) {
 	// The fused `o.m(args)` form: look up a field first (a callable field shadows a
 	// method), then a method on the class.
 	private def invoke(nameIdx: int, argc: int) -> bool {
-		var base = vsp - argc - 1;
-		var receiver = stack[base];
+		var base = sp - argc - 1;
+		var receiver = valAt(base);
 		var name = module.names[nameIdx];
 		var inst = asInstance(receiver);
 		if (inst == null) return err("Only instances have methods.");
 		var field = inst.fields[name];
 		if (!Value.Undef.?(field)) {
-			stack[base] = field;
+			stack[base] = Slot.Val(field);
 			return callValue(argc);
 		}
 		var m = inst.cls.findMethod(name);
@@ -306,7 +306,7 @@ class Interpreter(module: Module) {
 		return callClosure(m, base, argc);
 	}
 	private def invokeSuper(nameIdx: int, argc: int, superclass: LoxClass) -> bool {
-		var base = vsp - argc - 1;
+		var base = sp - argc - 1;
 		var name = module.names[nameIdx];
 		var m = superclass.findMethod(name);
 		if (m == null) return undefinedProperty(name);
@@ -334,8 +334,8 @@ class Interpreter(module: Module) {
 			Wasm.SUB => return arith(idx);
 			Wasm.MUL => return arith(idx);
 			Wasm.DIV => return arith(idx);
-			Wasm.EQ => { var b = pop(), a = pop(); push(Values.box(a == b)); return true; }
-			Wasm.NE => { var b = pop(), a = pop(); push(Values.box(a != b)); return true; }
+			Wasm.EQ => { var b = pop(), a = pop(); push(Values.box(Values.equal(a, b))); return true; }
+			Wasm.NE => { var b = pop(), a = pop(); push(Values.box(!Values.equal(a, b))); return true; }
 			Wasm.LT => return compare(idx);
 			Wasm.LE => return compare(idx);
 			Wasm.GT => return compare(idx);
@@ -344,13 +344,13 @@ class Interpreter(module: Module) {
 			Wasm.CALL_VALUE => return callValue(ipop());
 			Wasm.CHECK_GLOBAL => {
 				var g = ipop();
-				if (Value.Undef.?(stack[vsp - 1])) return undefinedVariable(g);
+				if (Value.Undef.?(valAt(sp - 1))) return undefinedVariable(g);
 				return true;
 			}
 			Wasm.SET_GLOBAL => {
 				var g = ipop();
 				if (Value.Undef.?(globals[g])) return undefinedVariable(g);
-				globals[g] = stack[vsp - 1];
+				globals[g] = valAt(sp - 1);
 				return true;
 			}
 			Wasm.CELL_NEW => { push(Value.Ref(LoxCell.new(pop()))); return true; }
@@ -365,8 +365,8 @@ class Interpreter(module: Module) {
 			Wasm.CLOSURE => {
 				var n = ipop(), funcidx = ipop();
 				var cells = Array<LoxCell>.new(n);
-				for (i < n) cells[i] = LoxCell.!(asObject(stack[vsp - n + i]));
-				vsp -= n;
+				for (i < n) cells[i] = LoxCell.!(asObject(valAt(sp - n + i)));
+				sp -= n;
 				push(Value.Ref(LoxClosure.new(module.funcAt(funcidx), cells)));
 				return true;
 			}
@@ -506,16 +506,24 @@ class Interpreter(module: Module) {
 	// ---- stacks ------------------------------------------------------------------
 
 	private def push(v: Value) {
-		stack[vsp++] = v;
+		stack[sp++] = Slot.Val(v);
 	}
 	private def pop() -> Value {
-		return stack[--vsp];
+		return valAt(--sp);
 	}
 	private def ipush(v: int) {
-		istack[isp++] = v;
+		stack[sp++] = Slot.I32(v);
 	}
 	private def ipop() -> int {
-		return istack[--isp];
+		return i32At(--sp);
+	}
+	// The compiler emits well-typed Wasm, so a slot always holds the type the
+	// instruction reading it expects; these casts document that and check it.
+	private def valAt(i: int) -> Value {
+		return Slot.Val.!(stack[i]).v;
+	}
+	private def i32At(i: int) -> int {
+		return Slot.I32.!(stack[i]).v;
 	}
 	private def asObject(v: Value) -> LoxObject {
 		match (v) {
