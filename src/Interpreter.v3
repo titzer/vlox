@@ -10,10 +10,13 @@
 // the same stack, in the slots below its operand area.
 
 // An entry of the operand stack.
-// XXX: {Slot} and {Value} both want to be #unboxed. Marking either of them so
-// currently miscompiles, in two ways: a Ref read back out of an Array<Slot> fails
-// its subclass type query, and `==` on a Value stops being structural. Boxing costs
-// roughly 25% here, so this is worth revisiting.
+// XXX: {Slot} and {Value} both want to be #unboxed, which is worth about 25% here.
+// Blocked on a runtime bug, not a variant one: on x86-64-darwin, System.ticksUs()
+// corrupts a heap object when it runs inside a function reached through a field of
+// function type that returns a two-word variant. That is exactly the shape of
+// `clock`, so an unboxed build fails only the one test that calls it. Reduced to
+// virgil/test/rt/closure_ref_corrupt0{0,1,2}.v3. Boxing sidesteps it, and also
+// changes `==` on a Value, which is why Values.equal has an explicit Num arm.
 type Slot {
 	case Val(v: Value);
 	case I32(v: int);
