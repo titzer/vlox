@@ -1,11 +1,6 @@
 // Copyright 2026 Ben L. Titzer. All rights reserved.
 // See LICENSE for details of Apache 2.0 license.
 
-// AST for Lox. Nodes are classes rather than variants because the resolver
-// annotates them in place with the storage decisions the compiler needs.
-
-// Name resolution.
-
 // How a name is reached at run time. Filled in by the Resolver.
 enum VarKind { GLOBAL, LOCAL, UPVALUE }
 
@@ -24,15 +19,13 @@ type Capture {
 	case FromUpvalue(index: int);
 }
 
-// Functions.
-
 // What a {FuncDecl} is; the kind decides what slot 0 holds and what falling off
 // the end returns.
 enum FuncKind { SCRIPT, FUNCTION, METHOD, INITIALIZER }
 
-// Nodes carry their source range in a mutable field rather than a constructor
-// parameter, so that a node built bottom-up can still be stamped with the range it
-// actually covers: `IfStmt.new(c, t, e).at(spanFrom(start))`.
+// ==== AST nodes ================================================================================
+// Base class of (most) AST nodes, including source range. Source is set after construction,
+// e.g. {IfStmt.new(c, t, e).at(spanFrom(start))}.
 class Node {
 	var span: Span;
 	def at(span: Span) -> this {
@@ -68,7 +61,7 @@ class FuncDecl(name: string, kind: FuncKind, params: Array<LoxToken>, body: Arra
 	}
 }
 
-// Expressions.
+// ==== Expressions ==============================================================================
 class Expr extends Node {
 	var grouped: bool;  // for detecting `(a) = 1` errors.
 	def group() -> this {
@@ -87,59 +80,54 @@ class VarExpr(name: LoxToken) extends Expr {
 class AssignExpr(name: LoxToken, value: Expr) extends Expr {
 	var ref: VarRef;
 }
-// Prefix `!` and `-`.
+// Prefix expressions: `op operand`, like `!` and `-`.
 class UnaryExpr(op: LoxToken, operand: Expr) extends Expr { }
-// Arithmetic, comparison and equality. Dynamically typed, so each is an intrinsic.
+// Arithmetic, comparison and equality: `left op right`.
 class BinaryExpr(op: LoxToken, left: Expr, right: Expr) extends Expr { }
-// Short-circuiting logical operations.
+// Short-circuiting logical operations: `left op right`, like `&&` and `||`.
 class LogicalExpr(op: LoxToken, left: Expr, right: Expr) extends Expr { }
-// Calls.
+// Calls: `callee(args)`.
 class CallExpr(callee: Expr, args: Array<Expr>) extends Expr { }
-// Property read `o.f`, which finds a field first and then a method.
+// Property read: `obj.name`.
 class GetExpr(obj: Expr, name: LoxToken) extends Expr { }
-// Property write `o.f = v`.
+// Property write: `obj.name = value`.
 class SetExpr(obj: Expr, name: LoxToken, value: Expr) extends Expr { }
 // The receiver of the enclosing method, which lives in slot 0.
 class ThisExpr(keyword: LoxToken) extends Expr {
 	var ref: VarRef;
 }
-// `super.m`, resolved against the enclosing class's superclass rather than the
-// receiver's, so that a chain of overrides does not dispatch back to itself.
+// Invocation on super: `super.method`, resolved against the enclosing class's superclass.
 class SuperExpr(keyword: LoxToken, method: LoxToken) extends Expr {
 	var superRef: VarRef;	// the hidden "super" binding of the enclosing class
 	var thisRef: VarRef;	// the receiver
 }
 
-// Statements. Each one is stack-neutral: it leaves the operand stack as it found it.
+// ==== Statements ===============================================================================
 class Stmt extends Node { }
 
-// An expression evaluated for its effect; its value is dropped.
+// An expression evaluated for its effect only.
 class ExprStmt(expr: Expr) extends Stmt { }
-// `print e;`.
+// `print expr;`.
 class PrintStmt(expr: Expr) extends Stmt { }
-// A brace-delimited scope. Nothing branches out of a Lox block, so it needs no
-// Wasm block, and leaving it emits nothing at all.
+// A brace-delimited scope: `{ stmts }`.
 class BlockStmt(stmts: Array<Stmt>) extends Stmt { }
-// `if`, with {elseArm} null when there is no else.
+// If statement: `if(cond) thenArm; else elseArm;`, with {elseArm} optional.
 class IfStmt(cond: Expr, thenArm: Stmt, elseArm: Stmt) extends Stmt { }
-// `while`, compiled to the canonical Wasm block/loop nest.
+// While loop: `while(cond) body;`.
 class WhileStmt(cond: Expr, body: Stmt) extends Stmt { }
-// Kept as its own node rather than desugared, so that the compiler can emit the
-// canonical Wasm block/loop nest with the increment inside the loop. {init} is
-// null, a VarStmt or an ExprStmt; a null {cond} means "true"; {incr} may be null.
+// For loop: `for (init; cond, incr) body;`.
 class ForStmt(init: Stmt, cond: Expr, incr: Expr, body: Stmt) extends Stmt { }
-// A variable declaration: a module global at the top level of the script,
-// otherwise a local, which is boxed if some inner function captures it.
+// Variable declaration: `var name = init;`.
 class VarStmt(name: LoxToken, init: Expr) extends Stmt {	// {init} is null for "var x;"
 	var ref: VarRef;
 }
-// `return`. Bare in an initializer still yields the receiver.
+// Return statement: `return value;`.
 class ReturnStmt(keyword: LoxToken, value: Expr) extends Stmt { }	// {value} null for "return;"
-// A function declaration, which builds the closure and binds it to {name}.
+// Function declaration.
 class FunStmt(name: LoxToken, func: FuncDecl) extends Stmt {
 	var ref: VarRef;
 }
-// A class declaration: create the class, inherit, install the methods, bind {name}.
+// Class declaration: `class name extends superclass { methods }`
 class ClassStmt(name: LoxToken, superclass: VarExpr, methods: Array<FuncDecl>) extends Stmt {
 	var ref: VarRef;	// storage of the class name; {superclass} null if none
 	var superRef: VarRef;	// storage of the hidden "super" binding
