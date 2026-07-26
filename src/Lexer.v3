@@ -39,7 +39,7 @@ type Span(beginLine: int, beginColumn: int, endLine: int, endColumn: int) {
 
 // A token carries its kind, its exact source text (the error messages quote the
 // offending lexeme verbatim), and its source range.
-class Token(kind: Tok, text: string, span: Span) {
+class LoxToken(kind: Tok, text: string, span: Span) {
 	var num: double;	// value of a NUMBER token
 	var str: string;	// unescaped contents of a STRING token
 
@@ -57,8 +57,8 @@ class Lexer(src: string) {
 	private var startLine: int;
 	private var startCol: int;
 
-	def tokenize() -> Vector<Token> {
-		var v = Vector<Token>.new();
+	def tokenize() -> Vector<LoxToken> {
+		var v = Vector<LoxToken>.new();
 		while (true) {
 			var t = next();
 			v.put(t);
@@ -66,12 +66,12 @@ class Lexer(src: string) {
 		}
 		return v;
 	}
-	private def next() -> Token {
+	private def next() -> LoxToken {
 		skipWhitespace();
 		start = pos;
 		startLine = line;
 		startCol = pos - lineStart + 1;
-		if (pos >= src.length) return Token.new(Tok.EOF, "", span());
+		if (pos >= src.length) return LoxToken.new(Tok.EOF, "", span());
 		var c = src[pos++];
 		if (isAlpha(c)) return ident();
 		if (isDigit(c)) return number();
@@ -116,10 +116,10 @@ class Lexer(src: string) {
 		line++;
 		lineStart = pos;
 	}
-	private def ident() -> Token {
+	private def ident() -> LoxToken {
 		while (pos < src.length && isAlphaNum(src[pos])) pos++;
 		var text = Arrays.range(src, start, pos);
-		return Token.new(keyword(text), text, span());
+		return LoxToken.new(keyword(text), text, span());
 	}
 	private def keyword(text: string) -> Tok {
 		match (text[0]) {
@@ -147,18 +147,18 @@ class Lexer(src: string) {
 		}
 		return Tok.IDENT;
 	}
-	private def number() -> Token {
+	private def number() -> LoxToken {
 		while (pos < src.length && isDigit(src[pos])) pos++;
 		if (pos + 1 < src.length && src[pos] == '.' && isDigit(src[pos + 1])) {
 			pos++;
 			while (pos < src.length && isDigit(src[pos])) pos++;
 		}
 		var text = Arrays.range(src, start, pos);
-		var t = Token.new(Tok.NUMBER, text, span());
+		var t = LoxToken.new(Tok.NUMBER, text, span());
 		t.num = Numbers.parse(text);
 		return t;
 	}
-	private def str() -> Token {
+	private def str() -> LoxToken {
 		var buf = StringBuilder.new();
 		while (pos < src.length && src[pos] != '\"') {
 			var c = src[pos++];
@@ -167,15 +167,15 @@ class Lexer(src: string) {
 		}
 		if (pos >= src.length) return error("Unterminated string.");
 		pos++; // closing quote
-		var t = Token.new(Tok.STRING, Arrays.range(src, start, pos), span());
+		var t = LoxToken.new(Tok.STRING, Arrays.range(src, start, pos), span());
 		t.str = buf.extract();
 		return t;
 	}
-	private def make(kind: Tok) -> Token {
-		return Token.new(kind, Arrays.range(src, start, pos), span());
+	private def make(kind: Tok) -> LoxToken {
+		return LoxToken.new(kind, Arrays.range(src, start, pos), span());
 	}
-	private def error(msg: string) -> Token {
-		return Token.new(Tok.ERROR, msg, span());
+	private def error(msg: string) -> LoxToken {
+		return LoxToken.new(Tok.ERROR, msg, span());
 	}
 	// The range from where the current token started to the current position.
 	private def span() -> Span {

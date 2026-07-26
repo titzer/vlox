@@ -186,7 +186,7 @@ def main(argv):
     if interpreter is None:
         interpreter = os.path.join(os.path.dirname(here), "bin", "vlox")
     if not os.path.isfile(interpreter):
-        print(f"runner: no interpreter at {interpreter}; run ./build.sh first")
+        print(f"runner: no interpreter at {interpreter}; run 'make' first")
         return 1
     if not roots:
         roots = [here]

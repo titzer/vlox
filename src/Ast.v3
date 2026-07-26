@@ -36,7 +36,7 @@ class Node {
 }
 
 // A function, method, or the implicit top-level script.
-class FuncDecl(name: string, kind: FuncKind, params: Array<Token>, body: Array<Stmt>) extends Node {
+class FuncDecl(name: string, kind: FuncKind, params: Array<LoxToken>, body: Array<Stmt>) extends Node {
 	var index: int;			// Wasm function index
 	var numLocals: int;		// slot 0 (callee) + params + body locals + scratch
 	var paramRefs: Array<VarRef>;	// storage of each parameter
@@ -74,24 +74,24 @@ class Expr extends Node {
 class LiteralExpr(value: Value) extends Expr { }
 // A string literal, kept distinct from {LiteralExpr} because the constant pool
 // needs the interned {LoxString}, which only exists once the runtime is up.
-class StringExpr(token: Token) extends Expr { }
-class VarExpr(name: Token) extends Expr {
+class StringExpr(token: LoxToken) extends Expr { }
+class VarExpr(name: LoxToken) extends Expr {
 	var ref: VarRef;
 }
-class AssignExpr(name: Token, value: Expr) extends Expr {
+class AssignExpr(name: LoxToken, value: Expr) extends Expr {
 	var ref: VarRef;
 }
-class UnaryExpr(op: Token, operand: Expr) extends Expr { }
-class BinaryExpr(op: Token, left: Expr, right: Expr) extends Expr { }
+class UnaryExpr(op: LoxToken, operand: Expr) extends Expr { }
+class BinaryExpr(op: LoxToken, left: Expr, right: Expr) extends Expr { }
 // {and} / {or}: short-circuiting, and yields one of its operands, not a bool.
-class LogicalExpr(op: Token, left: Expr, right: Expr) extends Expr { }
+class LogicalExpr(op: LoxToken, left: Expr, right: Expr) extends Expr { }
 class CallExpr(callee: Expr, args: Array<Expr>) extends Expr { }
-class GetExpr(obj: Expr, name: Token) extends Expr { }
-class SetExpr(obj: Expr, name: Token, value: Expr) extends Expr { }
-class ThisExpr(keyword: Token) extends Expr {
+class GetExpr(obj: Expr, name: LoxToken) extends Expr { }
+class SetExpr(obj: Expr, name: LoxToken, value: Expr) extends Expr { }
+class ThisExpr(keyword: LoxToken) extends Expr {
 	var ref: VarRef;
 }
-class SuperExpr(keyword: Token, method: Token) extends Expr {
+class SuperExpr(keyword: LoxToken, method: LoxToken) extends Expr {
 	var superRef: VarRef;	// the hidden "super" binding of the enclosing class
 	var thisRef: VarRef;	// the receiver
 }
@@ -107,14 +107,14 @@ class WhileStmt(cond: Expr, body: Stmt) extends Stmt { }
 // canonical Wasm block/loop nest with the increment inside the loop. {init} is
 // null, a VarStmt or an ExprStmt; a null {cond} means "true"; {incr} may be null.
 class ForStmt(init: Stmt, cond: Expr, incr: Expr, body: Stmt) extends Stmt { }
-class VarStmt(name: Token, init: Expr) extends Stmt {	// {init} is null for "var x;"
+class VarStmt(name: LoxToken, init: Expr) extends Stmt {	// {init} is null for "var x;"
 	var ref: VarRef;
 }
-class ReturnStmt(keyword: Token, value: Expr) extends Stmt { }	// {value} null for "return;"
-class FunStmt(name: Token, func: FuncDecl) extends Stmt {
+class ReturnStmt(keyword: LoxToken, value: Expr) extends Stmt { }	// {value} null for "return;"
+class FunStmt(name: LoxToken, func: FuncDecl) extends Stmt {
 	var ref: VarRef;
 }
-class ClassStmt(name: Token, superclass: VarExpr, methods: Array<FuncDecl>) extends Stmt {
+class ClassStmt(name: LoxToken, superclass: VarExpr, methods: Array<FuncDecl>) extends Stmt {
 	var ref: VarRef;	// storage of the class name; {superclass} null if none
 	var superRef: VarRef;	// storage of the hidden "super" binding
 }

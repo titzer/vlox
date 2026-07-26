@@ -7,9 +7,9 @@
 // which suppresses every subsequent message until {synchronize} finds a statement
 // boundary. That is what makes the expected-error sets in the reference test suite
 // come out right.
-class Parser(tokens: Vector<Token>, reporter: Reporter) {
+class Parser(tokens: Vector<LoxToken>, reporter: Reporter) {
 	private var pos: int;
-	private var previous: Token;
+	private var previous: LoxToken;
 
 	// Parse a complete program into a collection of statements.
 	def parseProgram() -> Array<Stmt> {
@@ -70,9 +70,9 @@ class Parser(tokens: Vector<Token>, reporter: Reporter) {
 		return FunStmt.new(name, function(name, FuncKind.FUNCTION));
 	}
 	// The shared tail of a function or method: parameter list plus body block.
-	def function(name: Token, kind: FuncKind) -> FuncDecl {
+	def function(name: LoxToken, kind: FuncKind) -> FuncDecl {
 		consume(Tok.LPAREN, "Expect '(' after function name.");
-		var params = Vector<Token>.new();
+		var params = Vector<LoxToken>.new();
 		if (!check(Tok.RPAREN)) {
 			while (true) {
 				if (params.length >= 255) {
@@ -313,12 +313,12 @@ class Parser(tokens: Vector<Token>, reporter: Reporter) {
 	}
 
 	// ---- token plumbing ----------------------------------------------------------
-	def peek() -> Token {
+	def peek() -> LoxToken {
 		return tokens[pos];
 	}
 	// The range from the start of {start} through the end of the last token
 	// consumed, which is how Virgil's own parser builds VST ranges.
-	def spanFrom(start: Token) -> Span {
+	def spanFrom(start: LoxToken) -> Span {
 		return start.span.plus(if(previous != null, previous.span, start.span));
 	}
 	def check(kind: Tok) -> bool {

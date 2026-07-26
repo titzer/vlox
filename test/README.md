@@ -1,6 +1,7 @@
 # Vlox tests
 
 ```sh
+make test                           # build, then every suite
 ./test/all.bash                     # every suite
 ./test/all.bash lox vlox            # named suites only
 ./test/all.bash -v                  # list every test

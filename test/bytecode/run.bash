@@ -9,7 +9,7 @@ UPDATE=0
 [ "${1:-}" = "-u" ] && UPDATE=1
 
 if [ ! -x "$VLOX" ]; then
-	echo "bytecode: no interpreter at $VLOX; run ./build.sh first" >&2
+	echo "bytecode: no interpreter at $VLOX; run 'make' first" >&2
 	exit 1
 fi
 

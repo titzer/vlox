@@ -15,7 +15,7 @@ ROOT=$(cd "$HERE/.." && pwd)
 VLOX=${VLOX:-$ROOT/bin/vlox}
 
 if [ ! -x "$VLOX" ]; then
-	echo "test: no interpreter at $VLOX; run ./build.sh first" >&2
+	echo "test: no interpreter at $VLOX; run 'make' first" >&2
 	exit 1
 fi
 

@@ -37,12 +37,14 @@ Vlox needs a [Virgil](https://github.com/titzer/virgil) checkout. Point
 `VIRGIL_LOC` at it (the default is `~/virgil`).
 
 ```sh
-./build.sh                  # native binary for this host -> bin/vlox
-./build.sh x86-64-linux     # or any Virgil target: jar, wasm-wasi1, arm64-linux, ...
+make                          # native binary for this host -> bin/vlox
+make TARGET=x86-64-linux      # or any Virgil target: jar, wasm-wasi1, arm64-linux, ...
+make test                     # build, then run every test suite
+make test SUITE=vlox          # run one suite
 
-bin/vlox program.lox        # run
-bin/vlox -d program.lox     # disassemble the compiled Wasm and exit
-bin/vlox -c program.lox     # compile only
+bin/vlox program.lox          # run
+bin/vlox -d program.lox       # disassemble the compiled Wasm and exit
+bin/vlox -c program.lox       # compile only
 ```
 
 Exit codes follow the reference implementations: `65` for a compile error, `70`
@@ -51,7 +53,7 @@ for a runtime error, `0` otherwise.
 ## Testing
 
 ```sh
-./test/all.bash             # everything
+make test                   # everything
 ./test/all.bash lox         # just one suite
 ./test/all.bash -v          # list every test
 ```

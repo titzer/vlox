@@ -211,7 +211,7 @@ class Resolver(module: Module, reporter: Reporter) {
 	}
 	// Declare {name} in the innermost scope, or as a module global at the top level
 	// of the script.
-	private def declare(name: Token) -> VarRef {
+	private def declare(name: LoxToken) -> VarRef {
 		if (atGlobalScope()) {
 			var ref = VarRef.new(name.text);
 			ref.kind = VarKind.GLOBAL;
@@ -247,7 +247,7 @@ class Resolver(module: Module, reporter: Reporter) {
 	}
 	// Resolve a use of {name}: innermost local, else an upvalue of some enclosing
 	// function, else a module global.
-	private def resolveName(name: Token) -> VarRef {
+	private def resolveName(name: LoxToken) -> VarRef {
 		var local = findLocal(fs, name.text);
 		if (local != null) {
 			if (!local.initialized) {

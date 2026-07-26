@@ -40,13 +40,13 @@ class Reporter {
 	//   [line 3] Error at 'foo': Expect ';' after expression.
 	//   [line 3] Error at end: Expect '}' after block.
 	//   [line 3] Error: Unexpected character.        (a scanner error token)
-	def errorAt(token: Token, msg: string) {
+	def errorAt(token: LoxToken, msg: string) {
 		if (panicMode) return;
 		panicMode = true;
 		hadError = true;
 		Io.err(render(_, token, msg));
 	}
-	private def render(buf: StringBuilder, token: Token, msg: string) -> StringBuilder {
+	private def render(buf: StringBuilder, token: LoxToken, msg: string) -> StringBuilder {
 		buf.put1("[line %d] Error", token.line());
 		match (token.kind) {
 			EOF => buf.puts(" at end");
