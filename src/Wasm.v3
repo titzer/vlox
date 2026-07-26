@@ -78,20 +78,51 @@ component Wasm {
 		if (idx >= 0 && idx < NUM_INTRINSICS) return INTRINSIC_NAMES[idx];
 		return "?";
 	}
+
+	// ---- decoding ----------------------------------------------------------------
+	// {CodeBuffer} writes LEBs through {DataWriter}; reading them back takes an
+	// explicit position rather than a cursor object, because the interpreter keeps
+	// its pc in a local across a whole run of instructions.
+
+	// Read an unsigned LEB128 at {pos}; returns the value and the position after it.
+	def readUleb(code: Array<byte>, pos: int) -> (int, int) {
+		var result = 0, shift: byte = 0, pc = pos, b = code[pos];
+		while ((b & 0x80) != 0) {
+			result = result | (int.!(b & 0x7F) << shift);
+			shift += 7;
+			b = code[++pc];
+		}
+		return (result | (int.!(b) << shift), pc + 1);
+	}
+	// Read a signed LEB128 at {pos}; returns the value and the position after it.
+	def readSleb(code: Array<byte>, pos: int) -> (int, int) {
+		var result = 0, shift: byte = 0, pc = pos, b = code[pos];
+		while ((b & 0x80) != 0) {
+			result = result | (int.!(b & 0x7F) << shift);
+			shift += 7;
+			b = code[++pc];
+		}
+		result = result | (int.!(b & 0x7F) << shift);
+		shift += 7;
+		if (shift < 32 && (b & 0x40) != 0) result = result | (-1 << shift);
+		return (result, pc + 1);
+	}
 }
 
-// A growable buffer of Wasm code, with a parallel (offset, line, column) table.
-// Runtime stack traces need the line; disassembly listings show the column too.
-class CodeBuffer {
-	def bytes = Vector<byte>.new();
+// A growable buffer of Wasm code. {DataWriter} supplies the storage and the LEB128
+// encodings, which are the same ones Wasm uses for every index immediate; this adds
+// the opcode spellings and a parallel (offset, line, column) table. Runtime stack
+// traces need the line; disassembly listings show the column too.
+class CodeBuffer extends DataWriter {
 	private def positions = Vector<int>.new();
 	private var lastLine = -1;
 	private var lastColumn = -1;
 
-	// Record that everything emitted from here on comes from {span}.
-	def at(span: Span) -> this {
+	// Record that everything emitted from here on comes from {span}. Named {srcAt}
+	// rather than {at} because {DataWriter.at} already means "seek".
+	def srcAt(span: Span) -> this {
 		if (span.beginLine != lastLine || span.beginColumn != lastColumn) {
-			positions.put(bytes.length);
+			positions.put(pos);
 			positions.put(span.beginLine);
 			positions.put(span.beginColumn);
 			lastLine = span.beginLine;
@@ -99,39 +130,15 @@ class CodeBuffer {
 		}
 	}
 	def op(b: byte) -> this {
-		bytes.put(b);
+		putb(b);
 	}
 	def op1(b: byte, imm: int) -> this {
-		bytes.put(b);
-		uleb(imm);
-	}
-	// Unsigned LEB128, the Wasm encoding for every index immediate.
-	def uleb(val: int) -> this {
-		var v = u32.view(val);
-		while (true) {
-			var b = byte.!(v & 0x7Fu);
-			v = v >> 7;
-			if (v == 0) { bytes.put(b); return; }
-			bytes.put(byte.!(b | 0x80));
-		}
-	}
-	// Signed LEB128, the Wasm encoding for i32.const.
-	def sleb(val: int) -> this {
-		var v = val;
-		while (true) {
-			var b = byte.!(v & 0x7F);
-			v = v >> 7;
-			var signBit = (b & 0x40) != 0;
-			if ((v == 0 && !signBit) || (v == -1 && signBit)) {
-				bytes.put(b);
-				return;
-			}
-			bytes.put(byte.!(b | 0x80));
-		}
+		putb(b);
+		put_uleb32(u32.view(imm));
 	}
 	def i32const(val: int) -> this {
-		bytes.put(Wasm.I32_CONST);
-		sleb(val);
+		putb(Wasm.I32_CONST);
+		put_sleb32(val);
 	}
 	// A call to a runtime intrinsic; indistinguishable from any other Wasm call.
 	def intrinsic(idx: int) -> this {
@@ -141,9 +148,6 @@ class CodeBuffer {
 	def intrinsic1(idx: int, imm: int) -> this {
 		i32const(imm);
 		op1(Wasm.CALL, idx);
-	}
-	def extract() -> Array<byte> {
-		return bytes.extract();
 	}
 	def extractPositions() -> Array<int> {
 		return positions.extract();

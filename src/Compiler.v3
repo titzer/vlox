@@ -20,7 +20,7 @@ class Compiler(module: Module, reporter: Reporter) {
 		decl = f;
 		buf = CodeBuffer.new();
 		scratch = f.numLocals;
-		buf.at(f.span);
+		buf.srcAt(f.span);
 		emitPrologue(f);
 		for (s in f.body) stmt(s);
 		emitEpilogue(f);
@@ -52,7 +52,7 @@ class Compiler(module: Module, reporter: Reporter) {
 	// ---- statements --------------------------------------------------------------
 
 	private def stmt(s: Stmt) {
-		buf.at(s.span);
+		buf.srcAt(s.span);
 		match (s) {
 			x: ExprStmt => {
 				expr(x.expr);
@@ -60,19 +60,19 @@ class Compiler(module: Module, reporter: Reporter) {
 			}
 			x: PrintStmt => {
 				expr(x.expr);
-				buf.at(x.span).intrinsic(Wasm.PRINT);
+				buf.srcAt(x.span).intrinsic(Wasm.PRINT);
 			}
 			x: VarStmt => {
 				var boxed = beginDeclare(x.ref);
 				if (x.init != null) expr(x.init);
 				else pushConst(Value.Nil);
-				buf.at(x.span);
+				buf.srcAt(x.span);
 				endDeclare(x.ref, boxed);
 			}
 			x: BlockStmt => for (t in x.stmts) stmt(t);
 			x: IfStmt => {
 				expr(x.cond);
-				buf.at(x.span).intrinsic(Wasm.TRUTHY);
+				buf.srcAt(x.span).intrinsic(Wasm.TRUTHY);
 				buf.op1(Wasm.IF, Wasm.BT_VOID);
 				stmt(x.thenArm);
 				if (x.elseArm != null) {
@@ -85,7 +85,7 @@ class Compiler(module: Module, reporter: Reporter) {
 				buf.op1(Wasm.BLOCK, Wasm.BT_VOID);
 				buf.op1(Wasm.LOOP, Wasm.BT_VOID);
 				expr(x.cond);
-				buf.at(x.span).intrinsic(Wasm.TRUTHY);
+				buf.srcAt(x.span).intrinsic(Wasm.TRUTHY);
 				buf.op(Wasm.I32_EQZ);
 				buf.op1(Wasm.BR_IF, 1);		// exit the block
 				stmt(x.body);
@@ -99,7 +99,7 @@ class Compiler(module: Module, reporter: Reporter) {
 				buf.op1(Wasm.LOOP, Wasm.BT_VOID);
 				if (x.cond != null) {
 					expr(x.cond);
-					buf.at(x.span).intrinsic(Wasm.TRUTHY);
+					buf.srcAt(x.span).intrinsic(Wasm.TRUTHY);
 					buf.op(Wasm.I32_EQZ);
 					buf.op1(Wasm.BR_IF, 1);
 				}
@@ -116,14 +116,14 @@ class Compiler(module: Module, reporter: Reporter) {
 				if (x.value != null) expr(x.value);
 				else if (decl.kind == FuncKind.INITIALIZER) loadRef(decl.selfRef);
 				else pushConst(Value.Nil);
-				buf.at(x.span).op(Wasm.RETURN);
+				buf.srcAt(x.span).op(Wasm.RETURN);
 			}
 			x: FunStmt => {
 				// The cell is created first, so a closure that captures the
 				// function's own name can see it and recurse.
 				var boxed = beginDeclare(x.ref);
 				closure(x.func);
-				buf.at(x.span);
+				buf.srcAt(x.span);
 				endDeclare(x.ref, boxed);
 			}
 			x: ClassStmt => classStmt(x);
@@ -140,7 +140,7 @@ class Compiler(module: Module, reporter: Reporter) {
 			// `super` binding needs it too, so stash it in a scratch local.
 			var tmp = allocScratch();
 			expr(x.superclass);
-			buf.at(x.span).op1(Wasm.LOCAL_TEE, tmp);
+			buf.srcAt(x.span).op1(Wasm.LOCAL_TEE, tmp);
 			buf.intrinsic(Wasm.INHERIT);
 			var superBoxed = beginDeclare(x.superRef);
 			buf.op1(Wasm.LOCAL_GET, tmp);
@@ -149,9 +149,9 @@ class Compiler(module: Module, reporter: Reporter) {
 		}
 		for (m in x.methods) {
 			closure(m);
-			buf.at(m.span).intrinsic1(Wasm.METHOD, module.nameFor(m.name));
+			buf.srcAt(m.span).intrinsic1(Wasm.METHOD, module.nameFor(m.name));
 		}
-		buf.at(x.span);
+		buf.srcAt(x.span);
 		endDeclare(x.ref, boxed);
 	}
 	// Build a closure over {f}: push each captured cell, then the function index and
@@ -170,7 +170,7 @@ class Compiler(module: Module, reporter: Reporter) {
 	// ---- expressions -------------------------------------------------------------
 
 	private def expr(e: Expr) {
-		buf.at(e.span);
+		buf.srcAt(e.span);
 		match (e) {
 			x: LiteralExpr => pushConst(x.value);
 			x: StringExpr => buf.op1(Wasm.GLOBAL_GET, module.stringConstant(x.token.str));
@@ -179,30 +179,30 @@ class Compiler(module: Module, reporter: Reporter) {
 			x: AssignExpr => assign(x.ref, x.value, x.span);
 			x: UnaryExpr => {
 				expr(x.operand);
-				buf.at(x.span).intrinsic(if(x.op.kind == Tok.BANG, Wasm.NOT, Wasm.NEG));
+				buf.srcAt(x.span).intrinsic(if(x.op.kind == Tok.BANG, Wasm.NOT, Wasm.NEG));
 			}
 			x: BinaryExpr => {
 				expr(x.left);
 				expr(x.right);
-				buf.at(x.span).intrinsic(binaryIntrinsic(x.op.kind));
+				buf.srcAt(x.span).intrinsic(binaryIntrinsic(x.op.kind));
 			}
 			x: LogicalExpr => logical(x);
 			x: CallExpr => call(x);
 			x: GetExpr => {
 				expr(x.obj);
-				buf.at(x.span).intrinsic1(Wasm.GET_FIELD, module.nameFor(x.name.text));
+				buf.srcAt(x.span).intrinsic1(Wasm.GET_FIELD, module.nameFor(x.name.text));
 			}
 			x: SetExpr => {
 				expr(x.obj);
 				expr(x.value);
-				buf.at(x.span).intrinsic1(Wasm.SET_FIELD, module.nameFor(x.name.text));
+				buf.srcAt(x.span).intrinsic1(Wasm.SET_FIELD, module.nameFor(x.name.text));
 			}
 			x: SuperExpr => {
 				// A bare `super.m` that is not immediately called produces a
 				// bound method.
 				loadRef(x.thisRef);
 				loadRef(x.superRef);
-				buf.at(x.span).intrinsic1(Wasm.GET_SUPER, module.nameFor(x.method.text));
+				buf.srcAt(x.span).intrinsic1(Wasm.GET_SUPER, module.nameFor(x.method.text));
 			}
 			_ => pushConst(Value.Nil);
 		}
@@ -213,7 +213,7 @@ class Compiler(module: Module, reporter: Reporter) {
 	private def logical(x: LogicalExpr) {
 		var tmp = allocScratch();
 		expr(x.left);
-		buf.at(x.span).op1(Wasm.LOCAL_TEE, tmp);
+		buf.srcAt(x.span).op1(Wasm.LOCAL_TEE, tmp);
 		buf.intrinsic(Wasm.TRUTHY);
 		buf.op1(Wasm.IF, Wasm.VT_LOX);
 		if (x.op.kind == Tok.AND) {
@@ -235,7 +235,7 @@ class Compiler(module: Module, reporter: Reporter) {
 			var g = GetExpr.!(x.callee);
 			expr(g.obj);
 			for (a in x.args) expr(a);
-			buf.at(x.span).i32const(module.nameFor(g.name.text));
+			buf.srcAt(x.span).i32const(module.nameFor(g.name.text));
 			buf.intrinsic1(Wasm.INVOKE, x.args.length);
 			return;
 		}
@@ -244,13 +244,13 @@ class Compiler(module: Module, reporter: Reporter) {
 			loadRef(s.thisRef);
 			for (a in x.args) expr(a);
 			loadRef(s.superRef);
-			buf.at(x.span).i32const(module.nameFor(s.method.text));
+			buf.srcAt(x.span).i32const(module.nameFor(s.method.text));
 			buf.intrinsic1(Wasm.INVOKE_SUPER, x.args.length);
 			return;
 		}
 		expr(x.callee);
 		for (a in x.args) expr(a);
-		buf.at(x.span).intrinsic1(Wasm.CALL_VALUE, x.args.length);
+		buf.srcAt(x.span).intrinsic1(Wasm.CALL_VALUE, x.args.length);
 	}
 
 	// ---- variable access ---------------------------------------------------------
@@ -309,22 +309,22 @@ class Compiler(module: Module, reporter: Reporter) {
 		match (ref.kind) {
 			GLOBAL => {
 				expr(value);
-				buf.at(span).intrinsic1(Wasm.SET_GLOBAL, ref.index);
+				buf.srcAt(span).intrinsic1(Wasm.SET_GLOBAL, ref.index);
 			}
 			LOCAL => {
 				if (ref.boxed) {
 					buf.op1(Wasm.LOCAL_GET, ref.index);
 					expr(value);
-					buf.at(span).intrinsic(Wasm.CELL_SET);
+					buf.srcAt(span).intrinsic(Wasm.CELL_SET);
 				} else {
 					expr(value);
-					buf.at(span).op1(Wasm.LOCAL_TEE, ref.index);
+					buf.srcAt(span).op1(Wasm.LOCAL_TEE, ref.index);
 				}
 			}
 			UPVALUE => {
 				buf.intrinsic1(Wasm.UPVALUE, ref.index);
 				expr(value);
-				buf.at(span).intrinsic(Wasm.CELL_SET);
+				buf.srcAt(span).intrinsic(Wasm.CELL_SET);
 			}
 		}
 	}

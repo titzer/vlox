@@ -1,7 +1,9 @@
 lib/util/Arrays.v3
 lib/util/Chars.v3
+lib/util/DataWriter.v3
 lib/util/Floats.v3
 lib/util/Ints.v3
+lib/util/Layouts.v3
 lib/util/List.v3
 lib/util/Longs.v3
 lib/util/Map.v3

@@ -77,7 +77,7 @@ before code is emitted.
 | `src/Ast.v3` | AST nodes, annotated in place by the resolver |
 | `src/Parser.v3` | recursive descent, with clox's exact messages and panic-mode recovery |
 | `src/Resolver.v3` | scopes, local slots, and which locals must be boxed for capture |
-| `src/Wasm.v3` | opcodes, LEB128, the code buffer and its position table |
+| `src/Wasm.v3` | opcodes, LEB128 decoding, and the `DataWriter`-backed code buffer |
 | `src/Module.v3` | global index space (constants *and* Lox globals), function index space, name pool |
 | `src/Compiler.v3` | AST → Wasm bytecode |
 | `src/Value.v3` | Lox values and heap objects |

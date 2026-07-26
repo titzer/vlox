@@ -143,11 +143,11 @@ class Interpreter(module: Module) {
 						labelTop--;
 					}
 					Wasm.BR => {
-						var t = readUleb(code, pc);
+						var t = Wasm.readUleb(code, pc);
 						pc = branch(t.0);
 					}
 					Wasm.BR_IF => {
-						var t = readUleb(code, pc);
+						var t = Wasm.readUleb(code, pc);
 						pc = t.1;
 						if (ipop() != 0) pc = branch(t.0);
 					}
@@ -158,38 +158,38 @@ class Interpreter(module: Module) {
 					}
 					Wasm.DROP => vsp--;
 					Wasm.LOCAL_GET => {
-						var t = readUleb(code, pc);
+						var t = Wasm.readUleb(code, pc);
 						pc = t.1;
 						push(stack[f.base + t.0]);
 					}
 					Wasm.LOCAL_SET => {
-						var t = readUleb(code, pc);
+						var t = Wasm.readUleb(code, pc);
 						pc = t.1;
 						stack[f.base + t.0] = stack[--vsp];
 					}
 					Wasm.LOCAL_TEE => {
-						var t = readUleb(code, pc);
+						var t = Wasm.readUleb(code, pc);
 						pc = t.1;
 						stack[f.base + t.0] = stack[vsp - 1];
 					}
 					Wasm.GLOBAL_GET => {
-						var t = readUleb(code, pc);
+						var t = Wasm.readUleb(code, pc);
 						pc = t.1;
 						push(globals[t.0]);
 					}
 					Wasm.GLOBAL_SET => {
-						var t = readUleb(code, pc);
+						var t = Wasm.readUleb(code, pc);
 						pc = t.1;
 						globals[t.0] = stack[--vsp];
 					}
 					Wasm.I32_CONST => {
-						var t = readSleb(code, pc);
+						var t = Wasm.readSleb(code, pc);
 						pc = t.1;
 						ipush(t.0);
 					}
 					Wasm.I32_EQZ => istack[isp - 1] = if(istack[isp - 1] == 0, 1, 0);
 					Wasm.CALL => {
-						var t = readUleb(code, pc);
+						var t = Wasm.readUleb(code, pc);
 						// Only intrinsics are reached by a direct call; Lox
 						// calls are dynamic and go through `lox.call`.
 						if (t.0 >= Wasm.NUM_INTRINSICS) {
@@ -552,27 +552,6 @@ class Interpreter(module: Module) {
 	private def asInstance(v: Value) -> LoxInstance {
 		var o = asObj(v);
 		return if(LoxInstance.?(o), LoxInstance.!(o));
-	}
-	private def readUleb(code: Array<byte>, pos: int) -> (int, int) {
-		var result = 0, shift: byte = 0, pc = pos, b = code[pos];
-		while ((b & 0x80) != 0) {
-			result = result | (int.!(b & 0x7F) << shift);
-			shift += 7;
-			b = code[++pc];
-		}
-		return (result | (int.!(b) << shift), pc + 1);
-	}
-	private def readSleb(code: Array<byte>, pos: int) -> (int, int) {
-		var result = 0, shift: byte = 0, pc = pos, b = code[pos];
-		while ((b & 0x80) != 0) {
-			result = result | (int.!(b & 0x7F) << shift);
-			shift += 7;
-			b = code[++pc];
-		}
-		result = result | (int.!(b & 0x7F) << shift);
-		shift += 7;
-		if (shift < 32 && (b & 0x40) != 0) result = result | (-1 << shift);
-		return (result, pc + 1);
 	}
 
 	// ---- preparation -------------------------------------------------------------

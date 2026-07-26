@@ -97,24 +97,24 @@ class Disassembler(module: Module) {
 			Wasm.LOCAL_TEE => next = imm(buf, code, next, "local.tee");
 			Wasm.I32_EQZ => buf.puts("i32.eqz");
 			Wasm.GLOBAL_GET => {
-				var g = uleb(code, next);
+				var g = Wasm.readUleb(code, next);
 				buf.put1("global.get %d", g.0);
 				annotateGlobal(buf, g.0);
 				next = g.1;
 			}
 			Wasm.GLOBAL_SET => {
-				var g = uleb(code, next);
+				var g = Wasm.readUleb(code, next);
 				buf.put1("global.set %d", g.0);
 				annotateGlobal(buf, g.0);
 				next = g.1;
 			}
 			Wasm.I32_CONST => {
-				var v = sleb(code, next);
+				var v = Wasm.readSleb(code, next);
 				buf.put1("i32.const %d", v.0);
 				next = v.1;
 			}
 			Wasm.CALL => {
-				var v = uleb(code, next);
+				var v = Wasm.readUleb(code, next);
 				buf.put1("call %d", v.0);
 				if (v.0 < Wasm.NUM_INTRINSICS) {
 					buf.put1("  ;; %s", Wasm.intrinsicName(v.0));
@@ -134,7 +134,7 @@ class Disassembler(module: Module) {
 		if (t.length > 0) buf.sp().puts(t);
 	}
 	private def imm(buf: StringBuilder, code: Array<byte>, pos: int, name: string) -> int {
-		var v = uleb(code, pos);
+		var v = Wasm.readUleb(code, pos);
 		buf.put2("%s %d", name, v.0);
 		return v.1;
 	}
@@ -159,26 +159,5 @@ class Disassembler(module: Module) {
 		if (b == Wasm.VT_LOX) return "(result lox)";
 		if (b == Wasm.VT_I32) return "(result i32)";
 		return "?";
-	}
-	private def uleb(code: Array<byte>, pos: int) -> (int, int) {
-		var result = 0, shift: byte = 0, pc = pos, b = code[pos];
-		while ((b & 0x80) != 0) {
-			result = result | (int.!(b & 0x7F) << shift);
-			shift += 7;
-			b = code[++pc];
-		}
-		return (result | (int.!(b) << shift), pc + 1);
-	}
-	private def sleb(code: Array<byte>, pos: int) -> (int, int) {
-		var result = 0, shift: byte = 0, pc = pos, b = code[pos];
-		while ((b & 0x80) != 0) {
-			result = result | (int.!(b & 0x7F) << shift);
-			shift += 7;
-			b = code[++pc];
-		}
-		result = result | (int.!(b & 0x7F) << shift);
-		shift += 7;
-		if (shift < 32 && (b & 0x40) != 0) result = result | (-1 << shift);
-		return (result, pc + 1);
 	}
 }
