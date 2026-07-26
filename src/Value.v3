@@ -1,11 +1,7 @@
 // Copyright 2026 Ben L. Titzer. All rights reserved.
 // See LICENSE for details of Apache 2.0 license.
 
-// A Lox value. Virgil's `==` on this variant is exactly Lox's `==` (double.== for
-// {Num}, so NaN != NaN and 0.0 == -0.0; reference equality for interned strings),
-// which is why there is no Values.equal; test/vlox/number/equality.lox pins that
-// down. {Undef} is internal: an unassigned global or an absent field. It never
-// reaches Lox code, because every global read is guarded by {check_global}.
+// A Lox value.
 type Value #unboxed { // XXX: consider NaN-boxing
 	case Undef;
 	case Nil;
