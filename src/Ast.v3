@@ -84,7 +84,7 @@ class AssignExpr(name: LoxToken, value: Expr) extends Expr {
 class UnaryExpr(op: LoxToken, operand: Expr) extends Expr { }
 // Arithmetic, comparison and equality: `left op right`.
 class BinaryExpr(op: LoxToken, left: Expr, right: Expr) extends Expr { }
-// Short-circuiting logical operations: `left op right`, like `&&` and `||`.
+// Short-circuiting logical operations: `left and right`, `left or right`.
 class LogicalExpr(op: LoxToken, left: Expr, right: Expr) extends Expr { }
 // Calls: `callee(args)`.
 class CallExpr(callee: Expr, args: Array<Expr>) extends Expr { }
@@ -96,7 +96,8 @@ class SetExpr(obj: Expr, name: LoxToken, value: Expr) extends Expr { }
 class ThisExpr(keyword: LoxToken) extends Expr {
 	var ref: VarRef;
 }
-// Invocation on super: `super.method`, resolved against the enclosing class's superclass.
+// Super access: `super.method`, resolved against the enclosing class's superclass
+// rather than the receiver's. A bare read yields a bound method.
 class SuperExpr(keyword: LoxToken, method: LoxToken) extends Expr {
 	var superRef: VarRef;	// the hidden "super" binding of the enclosing class
 	var thisRef: VarRef;	// the receiver
@@ -115,7 +116,7 @@ class BlockStmt(stmts: Array<Stmt>) extends Stmt { }
 class IfStmt(cond: Expr, thenArm: Stmt, elseArm: Stmt) extends Stmt { }
 // While loop: `while(cond) body;`.
 class WhileStmt(cond: Expr, body: Stmt) extends Stmt { }
-// For loop: `for (init; cond, incr) body;`.
+// For loop: `for (init; cond; incr) body;`.
 class ForStmt(init: Stmt, cond: Expr, incr: Expr, body: Stmt) extends Stmt { }
 // Variable declaration: `var name = init;`.
 class VarStmt(name: LoxToken, init: Expr) extends Stmt {	// {init} is null for "var x;"
@@ -127,7 +128,7 @@ class ReturnStmt(keyword: LoxToken, value: Expr) extends Stmt { }	// {value} nul
 class FunStmt(name: LoxToken, func: FuncDecl) extends Stmt {
 	var ref: VarRef;
 }
-// Class declaration: `class name extends superclass { methods }`
+// Class declaration: `class name < superclass { methods }`.
 class ClassStmt(name: LoxToken, superclass: VarExpr, methods: Array<FuncDecl>) extends Stmt {
 	var ref: VarRef;	// storage of the class name; {superclass} null if none
 	var superRef: VarRef;	// storage of the hidden "super" binding

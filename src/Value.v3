@@ -1,7 +1,11 @@
 // Copyright 2026 Ben L. Titzer. All rights reserved.
 // See LICENSE for details of Apache 2.0 license.
 
-// A Lox value.
+// A Lox value. Virgil's `==` on this variant is exactly Lox's `==` (double.== for
+// {Num}, so NaN != NaN and 0.0 == -0.0; reference equality for interned strings),
+// which is why there is no Values.equal; test/vlox/number/equality.lox pins that
+// down. {Undef} is internal: an unassigned global or an absent field. It never
+// reaches Lox code, because every global read is guarded by {check_global}.
 type Value #unboxed { // XXX: consider NaN-boxing
 	case Undef;
 	case Nil;
@@ -50,8 +54,9 @@ class LoxObject {
 	def render(buf: StringBuilder) -> StringBuilder;
 }
 
-// A Lox string. Best allocated via {StringPool.intern} so that equality and
-// property lookup are pointer comparisons.
+// A Lox string. Allocate via {StringPool.intern}, not directly: Lox `==` on strings
+// is the {Ref} case's reference comparison, and {LoxStrings} maps compare keys the
+// same way, so a string built outside the pool would silently compare unequal.
 class LoxString extends LoxObject {
 	def str: string;
 	def hash: int;
@@ -61,7 +66,7 @@ class LoxString extends LoxObject {
 	}
 }
 
-// Maps keyed by strings.
+// Maps keyed by interned strings: hashing is a field read, equality a pointer compare.
 component LoxStrings {
 	def newMap<V>() -> HashMap<LoxString, V> {
 		return HashMap<LoxString, V>.new(LoxString.hash, LoxString.==);
